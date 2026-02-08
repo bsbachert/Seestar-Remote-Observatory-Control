@@ -102,7 +102,7 @@ class SumnerHUD:
         self.val_hrs   = self.add_sensor_line("⌛", "OP HOURS:", rx + 15, y_off + spacing*9.4, "#FFCC00", box_w)
         self.sync_light = self.canvas.create_oval(rx + 15, y_off + spacing*9.4 - 8, rx + 31, y_off + spacing*9.4 + 8, fill="gray", outline="white")
 
-        # Tablet Layout Positions
+        # Layout Positions
         self.all_img_id = self.canvas.create_image(self.sw*0.22, self.sh*0.4, anchor='center', tags="zoom")
         self.rad_img_id = self.canvas.create_image(self.sw*0.53, self.sh*0.4, anchor='center', tags="zoom")
         self.clk_img_id = self.canvas.create_image(self.sw*0.38, self.sh*0.82, anchor='center', tags="zoom")
@@ -123,16 +123,13 @@ class SumnerHUD:
         pop.attributes("-fullscreen", True, "-topmost", True)
         pop.config(bg='black')
         img = Image.open(path)
-        
         if "radar" in path.lower():
-            # TWEAK: Upscale reduced from 95% to 88% for a better buffer
             new_h = int(self.sh * 0.88)
             ratio = new_h / float(img.size[1])
             new_w = int(float(img.size[0]) * ratio)
             img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
         else:
             img.thumbnail((int(self.sw * 0.8), int(self.sh * 0.8)), Image.Resampling.LANCZOS)
-            
         self.p_img = ImageTk.PhotoImage(img)
         tk.Button(pop, image=self.p_img, bg='black', bd=0, activebackground='black', command=pop.destroy).pack(expand=True)
 
@@ -198,6 +195,7 @@ class SumnerHUD:
                         u_line = line.upper().strip()
                         if ":" not in u_line: continue
                         val = line.split(":", 1)[-1].strip()
+
                         if "SKY TEMP" in u_line: 
                             self.canvas.itemconfig(self.val_sky, text=val)
                             try: sky_t = float(''.join(c for c in val if c in '0123456789.-'))
@@ -210,7 +208,14 @@ class SumnerHUD:
                             self.canvas.itemconfig(self.val_hum, text=val)
                             try: hum_val = float(''.join(c for c in val if c in '0123456789.-'))
                             except: pass
-                        elif "PRESSURE" in u_line: self.canvas.itemconfig(self.val_pres, text=val)
+                        elif "PRESSURE" in u_line:
+                            # CONVERSION: mbar/hPa to inHg
+                            try:
+                                raw_p = float(''.join(c for c in val if c in '0123456789.-'))
+                                inches_p = raw_p * 0.02953
+                                self.canvas.itemconfig(self.val_pres, text=f"{inches_p:.2f} in")
+                            except:
+                                self.canvas.itemconfig(self.val_pres, text=val)
                         elif "WIND SPD" in u_line: self.canvas.itemconfig(self.val_wind, text=val)
                         elif "PRECIP" in u_line or "RAIN" in u_line: 
                             self.canvas.itemconfig(self.val_rain, text=val, fill="red" if "WET" in val.upper() else "cyan")
