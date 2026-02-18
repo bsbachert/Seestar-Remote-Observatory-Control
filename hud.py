@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import messagebox, scrolledtext
 from PIL import Image, ImageTk, ImageDraw
-import os, subprocess, random, math, sys, fcntl
+import os, subprocess, random, math, sys, fcntl, socket
 from datetime import datetime
 
 # --- SINGLE INSTANCE SHIELD ---
@@ -28,24 +28,29 @@ class SumnerHUD:
         self.path_notes = "/home/pi/allsky_guard/dossier.txt"
         self.path_mirror_cfg = "/home/pi/allsky_guard/mirror_config.txt"
         self.path_thresh = "/home/pi/allsky_guard/cloud_threshold.txt"
+        self.path_seestar_ip = "/home/pi/allsky_guard/seestar_ip.txt"
         
-        # ID Paths (Zip Path Removed)
+        # ID Paths
         self.path_radar_id = "/home/pi/allsky_guard/radar_coords.txt"
         self.path_csk_id = "/home/pi/allsky_guard/csk_id.txt"
         self.path_sync_script = "/home/pi/allsky_guard/get_radar.py"
-        
-        self.app_manager = "/usr/share/applications/indigo-server-manager.desktop"
-        self.app_imager = "/usr/share/applications/ain-imager.desktop"
 
         self.img_all = None
         self.img_rad = None
         self.img_clk = None
+        self.seestar_ip = "0.0.0.0"
 
         self.cloud_threshold = 30.0
         if os.path.exists(self.path_thresh):
             try:
                 with open(self.path_thresh, "r") as f:
                     self.cloud_threshold = float(f.read().strip())
+            except: pass
+            
+        if os.path.exists(self.path_seestar_ip):
+            try:
+                with open(self.path_seestar_ip, "r") as f:
+                    self.seestar_ip = f.read().strip()
             except: pass
 
         self.canvas = tk.Canvas(root, width=self.sw, height=self.sh, bg='black', highlightthickness=0)
@@ -79,7 +84,6 @@ class SumnerHUD:
                "--window-x", x, "--window-y", y, "--window-width", w, "--window-height", h])
 
     def create_placeholder(self, text, w, h):
-        """Generates a default image when IDs aren't set in the Dossier."""
         img = Image.new('RGB', (w, h), color=(15, 15, 15))
         draw = ImageDraw.Draw(img)
         draw.rectangle([0, 0, w-1, h-1], outline="red", width=3)
@@ -100,9 +104,9 @@ class SumnerHUD:
     def create_ui_elements(self):
         self.canvas.create_text(self.sw//2, 25, text="--- OBSERVATORY CONTROLS ---", fill="#FFCC00", font=("Arial", 12, "bold"))
         
-        tk.Button(self.root, text="🚀 INDIGO", bg="#003300", fg="white", font=("Arial", 9, "bold"), command=lambda: subprocess.Popen(["gio", "launch", self.app_manager])).place(x=self.sw//2 - 210, y=45)
-        tk.Button(self.root, text="🔭 IMAGER", bg="#001133", fg="white", font=("Arial", 9, "bold"), command=lambda: subprocess.Popen(["gio", "launch", self.app_imager])).place(x=self.sw//2 - 80, y=45)
-        tk.Button(self.root, text="📱 SEESTAR (V40)", bg="#4B0082", fg="white", font=("Arial", 9, "bold"), command=self.launch_seestar).place(x=self.sw//2 + 50, y=45)
+        # Center the Seestar button
+        tk.Button(self.root, text="📱 SEESTAR (V40)", bg="#4B0082", fg="white", font=("Arial", 9, "bold"), command=self.launch_seestar).place(x=self.sw//2 - 60, y=45)
+        
         tk.Button(self.root, text="MAINT / DOSSIER", command=self.open_dossier, bg="#222", fg="white", font=("Arial", 9, "bold")).place(x=20, y=20)
         tk.Button(self.root, text="EXIT HUD", command=self.root.destroy, bg="#500", fg="white", font=("Arial", 9, "bold")).place(x=150, y=20)
 
@@ -131,7 +135,9 @@ class SumnerHUD:
         self.roof_btn = tk.Button(self.root, text="OPEN / CLOSE ROOF", bg="#500", fg="white", activebackground="red", font=("Arial", 8, "bold"), command=self.toggle_roof)
         self.roof_btn.place(x=rx + 55, y=y_mid + spacing*6 + 22, width=box_w - 80)
 
+        # Added Alpaca Link indicator
         y_bot = y_mid + spacing*8
+        self.val_alpaca = self.add_sensor_line("🔭", "ALPACA LINK:", rx + 15, y_bot - spacing, "#00FF00", box_w)
         self.val_hrs   = self.add_sensor_line("⌛", "OP HOURS:", rx + 15, y_bot, "#FFCC00", box_w)
         self.sync_light = self.canvas.create_oval(rx + 15, y_bot - 8, rx + 31, y_bot + 8, fill="gray", outline="white")
 
@@ -139,7 +145,6 @@ class SumnerHUD:
         self.rad_img_id = self.canvas.create_image(self.sw*0.53, self.sh*0.4, anchor='center', tags="zoom")
         self.clk_img_id = self.canvas.create_image(self.sw*0.38, self.sh*0.82, anchor='center', tags="zoom")
 
-        # Popout bindings restored
         self.canvas.tag_bind(self.all_img_id, "<Button-1>", lambda e: self.popout(self.path_allsky))
         self.canvas.tag_bind(self.rad_img_id, "<Button-1>", lambda e: self.popout(self.path_radar))
         self.canvas.tag_bind(self.clk_img_id, "<Button-1>", lambda e: self.popout(self.path_clock))
@@ -183,10 +188,10 @@ class SumnerHUD:
                 with open(path, "r") as file: e.insert(0, file.read().strip())
             return e
 
-        # Zip Entry removed
         cfg_entry = create_entry("Mirror Config:", self.path_mirror_cfg)
         rad_entry = create_entry("Radar Station:", self.path_radar_id, "orange")
         csk_entry = create_entry("ClearSky ID:", self.path_csk_id, "#00FFCC")
+        ip_entry  = create_entry("Seestar IP:", self.path_seestar_ip, "#FF33FF")
 
         txt = scrolledtext.ScrolledText(d_win, bg="black", fg="#00FFCC", font=("Courier", 14), insertbackground="white")
         txt.pack(padx=20, pady=5, expand=True, fill='both')
@@ -197,7 +202,9 @@ class SumnerHUD:
             with open(self.path_mirror_cfg, "w") as f: f.write(cfg_entry.get())
             with open(self.path_radar_id, "w") as f: f.write(rad_entry.get().upper().strip())
             with open(self.path_csk_id, "w") as f: f.write(csk_entry.get().strip())
+            with open(self.path_seestar_ip, "w") as f: f.write(ip_entry.get().strip())
             with open(self.path_notes, 'w') as f: f.write(txt.get('1.0', 'end'))
+            self.seestar_ip = ip_entry.get().strip()
             d_win.destroy()
 
         def reset_hrs():
@@ -225,6 +232,15 @@ class SumnerHUD:
             x, y = random.randint(0, self.sw), random.randint(0, self.sh)
             self.canvas.create_oval(x, y, x+1, y+1, fill='white', outline='white')
 
+    def check_alpaca_status(self):
+        if not self.seestar_ip or self.seestar_ip == "0.0.0.0":
+            return False
+        try:
+            with socket.create_connection((self.seestar_ip, 32323), timeout=0.5):
+                return True
+        except:
+            return False
+
     def update_loop(self):
         img_w, img_h = int(self.sw * 0.28), int(self.sh * 0.45)
         clk_w, clk_h = int(self.sw * 0.60), int(self.sh * 0.35)
@@ -237,6 +253,10 @@ class SumnerHUD:
         
         self.img_clk = self.load_scale(self.path_clock, clk_w, clk_h, "ClearSky")
         self.canvas.itemconfig(self.clk_img_id, image=self.img_clk)
+
+        # Update Alpaca Status
+        alpaca_on = self.check_alpaca_status()
+        self.canvas.itemconfig(self.val_alpaca, text="ONLINE" if alpaca_on else "OFFLINE", fill="#00FF00" if alpaca_on else "#FF3333")
 
         if os.path.exists(self.path_hours):
             try:
