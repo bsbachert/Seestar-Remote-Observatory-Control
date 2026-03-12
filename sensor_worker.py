@@ -1,9 +1,8 @@
 import smbus2, bme280, time, os, subprocess, threading, math, serial
+import RPi.GPIO as GPIO
 
 # --- CONFIG ---
 BME_ADDR = 0x76  
-# MLX_ADDR = 0x5A  # Replaced by Arduino Serial logic
-WIND_PIN = 4   
 RAIN_PIN = 18  
 ROOF_PIN = 17  
 DEW_HEATER_PIN = 12  # PWM Signal to MOSFET [cite: 2026-02-03]
@@ -11,51 +10,58 @@ USB_PORT = "/dev/ttyUSB0" # Arduino Source
 PATH_SENSORS = "/home/pi/allsky_guard/sensors.txt"
 PATH_HOURS = "/home/pi/allsky_guard/hours.txt"
 
-# --- GLOBAL PULSE COUNTER ---
-wind_pulse_count = 0
-last_pulse_time = 0
-latest_sky_temp = "WAIT..." # Global to store Arduino data
+# --- GLOBAL DATA HOLDERS ---
+latest_sky_temp = "WAIT..."
+latest_wind_speed = 0.0
+
+# --- HARDWARE SETUP ---
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(RAIN_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
 def connect_serial():
     """Establishes connection to the Arduino"""
     try:
-        # Standard baud for your Arduino sky temp setup
-        s = serial.Serial(USB_PORT, 9600, timeout=1)
+        s = serial.Serial(USB_PORT, 9600, timeout=2)
         time.sleep(2) # Wait for Arduino reset
         return s
     except:
         return None
 
-def wind_event_listener():
-    global wind_pulse_count, last_pulse_time
-    # Anemometer: brown and blue wires to GPIO 4 and Ground [cite: 2026-02-03]
-    cmd = ["pinctrl", "poll", str(WIND_PIN)]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, bufsize=1)
-    for line in iter(proc.stdout.readline, ''):
-        if "lo" in line:
-            now = time.time()
-            if (now - last_pulse_time) > 0.01: 
-                wind_pulse_count += 1
-                last_pulse_time = now
+def arduino_reader():
+    """Reads comma-separated Sky and Wind data from Arduino"""
+    global latest_sky_temp, latest_wind_speed
+    ser = connect_serial()
+    while True:
+        if ser:
+            try:
+                if ser.in_waiting > 0:
+                    line = ser.readline().decode('utf-8', errors='ignore').strip()
+                    # Expecting format: "SKY TEMP:46.09,WIND:0.00"
+                    if "SKY TEMP" in line and "WIND" in line:
+                        parts = line.split(",")
+                        # Correctly extract Sky Temp (46.09)
+                        temp_raw = parts[0].split(":")[1].strip()
+                        latest_sky_temp = f"{temp_raw} F"
+                        try:
+                            # Correctly extract Wind Speed (0.00)
+                            latest_wind_speed = float(parts[1].split(":")[1].strip())
+                        except:
+                            pass
+            except:
+                ser = connect_serial() 
+        else:
+            ser = connect_serial()
+        time.sleep(0.1)
 
-def init_hardware():
+def get_bme_data():
     try:
-        time.sleep(2) 
-        
-        # Explicitly set GPIO 12 as Output and Drive Low initially
-        subprocess.run(["sudo", "pinctrl", "set", str(DEW_HEATER_PIN), "op", "dl"], check=True)
-        
-        # Initialize existing pins
-        subprocess.run(["sudo", "pinctrl", "set", str(WIND_PIN), "ip", "pu"], check=True)
-        subprocess.run(["sudo", "pinctrl", "set", str(RAIN_PIN), "ip", "pu"], check=True)
-        subprocess.run(["sudo", "pinctrl", "set", str(ROOF_PIN), "op", "dl"], check=True)
-        
-        t = threading.Thread(target=wind_event_listener, daemon=True)
-        t.start()
-        return smbus2.SMBus(1)
-    except Exception as e:
-        print(f"Hardware Init Failed: {e}")
-        return None
+        bus = smbus2.SMBus(1)
+        params = bme280.load_calibration_params(bus, BME_ADDR)
+        data = bme280.sample(bus, BME_ADDR, params)
+        bus.close()
+        return (data.temperature * 9/5) + 32, data.humidity, f"{data.pressure:.1f} hPa"
+    except:
+        return None, None, "--"
 
 def set_heater_state(is_on):
     state = "dh" if is_on else "dl"
@@ -64,94 +70,70 @@ def set_heater_state(is_on):
     except:
         pass
 
-def main():
-    global wind_pulse_count, latest_sky_temp
-    bus = init_hardware()
-    ser = connect_serial()
-    last_check = time.time()
+# Start background thread for Arduino data
+threading.Thread(target=arduino_reader, daemon=True).start()
+
+last_check = time.time()
+print("Sensor Worker started (Integrated Arduino Wind/Sky)...")
+
+while True:
+    time.sleep(5) 
     
-    while True:
-        # --- 1. READ ARDUINO (Sky Temp) ---
-        if ser:
-            try:
-                if ser.in_waiting > 0:
-                    line = ser.readline().decode('utf-8', errors='ignore').strip()
-                    # Expecting Arduino to send "SKY TEMP: XX.X F"
-                    if "SKY TEMP" in line.upper():
-                        latest_sky_temp = line.split(":")[-1].strip()
-            except:
-                ser.close()
-                ser = connect_serial()
+    # --- 1. COLLECT DATA ---
+    amb_f, hum_val, pre_str = get_bme_data()
+    is_wet = GPIO.input(RAIN_PIN) == GPIO.LOW
+    speed = latest_wind_speed # Now uses the Arduino value
+    
+    # --- 2. LOGIC ---
+    heater_status = "OFF"
+    if amb_f is not None and hum_val is not None:
+        T = (amb_f - 32) * 5/9
+        gamma = (math.log(hum_val/100) + ((17.27 * T) / (237.3 + T)))
+        dew_f = ((237.3 * gamma) / (17.27 - gamma) * 9/5) + 32
+        
+        if (amb_f - dew_f) <= 5.0:
+            set_heater_state(True)
+            heater_status = "ON (DEW RISK)"
         else:
-            ser = connect_serial()
-            latest_sky_temp = "OFFLINE"
+            set_heater_state(False)
+    
+    if is_wet or speed > 20.0:
+        subprocess.run(["pinctrl", "set", str(ROOF_PIN), "dh"])
+        status = "CLOSED/LOCKED"
+    else:
+        subprocess.run(["pinctrl", "set", str(ROOF_PIN), "dl"])
+        status = "OPEN/SAFE"
 
-        time.sleep(5)
-        pulses = wind_pulse_count
-        wind_pulse_count = 0  
+    # --- OPERATION HOURS & CLEANING REMINDER [cite: 2026-01-17] ---
+    now = time.time()
+    elapsed = (now - last_check) / 3600.0
+    last_check = now
+    total = 0.0
+    maint_alert = ""
+    try:
+        if os.path.exists(PATH_HOURS):
+            with open(PATH_HOURS, "r") as hf: total = float(hf.read().strip())
+        new_total = total + elapsed
+        with open(PATH_HOURS, "w") as hf: hf.write(f"{new_total:.4f}")
         
-        try:
-            rain_raw = subprocess.check_output(["pinctrl", "get", str(RAIN_PIN)], text=True)
-            is_wet = "lo" in rain_raw.lower()
-        except: is_wet = False
+        if new_total >= 1000.0:
+            maint_alert = "CLEANING REQUIRED"
+    except:
+        new_total = 0.0
 
-        speed = (pulses / 5) * 2.25
-        if speed > 100.0: speed = 0.0 
-        
-        amb_f, hum_val, pre_str = None, None, "--"
-        if bus:
-            try:
-                params = bme280.load_calibration_params(bus, BME_ADDR)
-                data = bme280.sample(bus, BME_ADDR, params)
-                amb_f = (data.temperature * 9/5) + 32
-                hum_val = data.humidity
-                pre_str = f"{data.pressure:.1f} hPa"
-            except: pass
-
-        # --- 2. DEW HEATER LOGIC ---
-        heater_status = "OFF"
-        if amb_f is not None and hum_val is not None:
-            T = (amb_f - 32) * 5/9
-            gamma = (math.log(hum_val/100) + ((17.27 * T) / (237.3 + T)))
-            dew_f = ((237.3 * gamma) / (17.27 - gamma) * 9/5) + 32
-            
-            # Trigger if Ambient Temp is within 5 degrees of Dew Point
-            if (amb_f - dew_f) <= 5.0:
-                set_heater_state(True)
-                heater_status = "ON (DEW RISK)"
-            else:
-                set_heater_state(False)
-        
-        if is_wet or speed > 20.0:
-            subprocess.run(["pinctrl", "set", str(ROOF_PIN), "dh"])
-            status = "CLOSED/LOCKED"
-        else:
-            subprocess.run(["pinctrl", "set", str(ROOF_PIN), "dl"])
-            status = "OPEN/SAFE"
-
-        now = time.time()
-        elapsed = (now - last_check) / 3600.0
-        last_check = now
-        total = 0.0
-        try:
-            if os.path.exists(PATH_HOURS):
-                with open(PATH_HOURS, "r") as hf: total = float(hf.read().strip())
-            with open(PATH_HOURS, "w") as hf: hf.write(f"{total + elapsed:.4f}")
-        except: pass
-
-        # --- 3. WRITE TO FILE ---
-        try:
-            with open(PATH_SENSORS, "w") as f:
-                f.write(f"ROOF: {status}\n")
-                f.write(f"HEATER: {heater_status}\n")
-                f.write(f"SKY TEMP: {latest_sky_temp}\n") 
-                f.write(f"AMB TEMP: {f'{amb_f:.1f} F' if amb_f else '--'}\n")
-                f.write(f"HUMIDITY: {f'{hum_val:.1f} %' if hum_val else '--'}\n")
-                f.write(f"PRESSURE: {pre_str}\n")
-                f.write(f"WIND SPD: {speed:.1f} MPH\n")
-                f.write(f"PRECIP: {'WET' if is_wet else 'DRY'}\n")
-                f.write(f"TOTAL RUN: {total:.1f} HRS\n")
-        except: pass
-
-if __name__ == "__main__":
-    main()
+    # --- 3. WRITE TO FILE ---
+    try:
+        with open(PATH_SENSORS, "w") as f:
+            f.write(f"ROOF: {status}\n")
+            f.write(f"HEATER: {heater_status}\n")
+            f.write(f"SKY TEMP: {latest_sky_temp}\n") 
+            f.write(f"AMB TEMP: {f'{amb_f:.1f} F' if amb_f else '--'}\n")
+            f.write(f"HUMIDITY: {f'{hum_val:.1f} %' if hum_val else '--'}\n")
+            f.write(f"PRESSURE: {pre_str}\n")
+            f.write(f"WIND SPD: {speed:.1f} MPH\n")
+            f.write(f"PRECIP: {'WET' if is_wet else 'DRY'}\n")
+            f.write(f"TOTAL RUN: {new_total:.1f} HRS\n")
+            if maint_alert:
+                f.write(f"MAINT: {maint_alert}\n")
+    except Exception as e:
+        print(f"File Write Error: {e}")
