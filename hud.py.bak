@@ -75,7 +75,7 @@ class SumnerHUD:
         self.check_cleaning_reminder()
         
         # Notify of Power Recovery on Startup
-        self.send_email_notification("System Power Recovery", "The Observatory HUD has restarted successfully.")
+        self.send_email_notification("System Power Recovery", "The Observatory HUD has restarted successfully following a power event or reboot.")
         
         self.update_loop()
 
@@ -405,9 +405,8 @@ class SumnerHUD:
                             except: pass
                         elif "WIND" in u_line:
                             try:
-                                # REMOVED: 1.25 multiplier logic
-                                # NOW: Reading raw value directly from sensors.txt
-                                wind_val = float(''.join(c for c in val if c in '0123456789.-'))
+                                raw_w = float(''.join(c for c in val if c in '0123456789.-'))
+                                wind_val = round(raw_w * 1.25, 1)
                                 self.canvas.itemconfig(self.val_wind, text=f"{wind_val} mph")
                             except: pass
                         elif "RAIN" in u_line or "PRECIP" in u_line:
@@ -448,16 +447,16 @@ class SumnerHUD:
 
                 self.canvas.itemconfig(self.val_dome, text=roof_text, fill=roof_color)
 
-                # --- NOTIFICATION & EMERGENCY LOGIC ---
+                # --- NOTIFICATION LOGIC ---
                 now = datetime.now()
                 
-                # Dusk Snapshot (Daily at 6:00 PM)
+                # 1. Dusk Snapshot (Daily at 6:00 PM)
                 if now.hour == 18 and now.minute == 0:
                     if self.dusk_sent_today != now.day:
                         self.send_email_notification("Dusk Sensor Snapshot", f"Observatory status at 18:00:\n\n{sensor_report}")
                         self.dusk_sent_today = now.day
 
-                # Emergency Weather Close
+                # 2. Emergency Close (Weather only after a manual open/safe state)
                 if is_wet or (wind_val and wind_val > 20):
                     with open(self.path_roof_cmd, "w") as f: f.write("CLOSE")
                     if self.last_roof_safety_state == "SAFE TO OPEN" and not self.emergency_sent:

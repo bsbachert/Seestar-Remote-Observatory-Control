@@ -1,5 +1,5 @@
 [ OBSERVATORY DOSSIER ]
-Last Service: NEVER
+Last Service: 03/10/2026
 ----------------
 
 ---- SYSTEM ARCHITECTURE (2026 SSD BUILD) ---
@@ -29,6 +29,105 @@ Software: Sumner Guard v6.0 + indi-allsky
 --- BACKGROUND SERVICES ---
 - sumner_monitor.service (Sensors)
 - sumner_sync.timer (Radar/Clocks)
+
+Ardrino Sketch for MLX90614 and Amnometer
+
+#include <Wire.h>
+#include <Adafruit_MLX90614.h>
+
+Adafruit_MLX90614 mlx = Adafruit_MLX90614();
+
+volatile unsigned long windPulses = 0;
+volatile unsigned long lastPulseTime = 0;
+unsigned long lastMillis = 0;
+
+// Median Filter Variables (Window of 3)
+const int windowSize = 3;
+float windReadings[windowSize];
+int windowIndex = 0;
+
+// Interrupt Service Routine with 15ms Debounce
+void countPulse() {
+  unsigned long currentTime = millis();
+  if (currentTime - lastPulseTime > 15) { 
+    windPulses++;
+    lastPulseTime = currentTime;
+  }
+}
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(LED_BUILTIN, OUTPUT);
+  mlx.begin();
+  
+  pinMode(2, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(2), countPulse, FALLING);
+  
+  for(int i = 0; i < windowSize; i++) windReadings[i] = 0.0;
+}
+
+void loop() {
+  // Sampling every 2.5 seconds
+  if (millis() - lastMillis >= 2500) {
+    digitalWrite(LED_BUILTIN, HIGH);
+    
+    float skyTemp = mlx.readObjectTempF();
+    
+    // Formula: (Pulses / 2.5 seconds) * 4.68 factor
+    float currentSpeed = (windPulses / 2.5) * 4.68;
+    
+    // Update Median Filter
+    windReadings[windowIndex] = currentSpeed;
+    windowIndex = (windowIndex + 1) % windowSize;
+
+    float a = windReadings[0];
+    float b = windReadings[1];
+    float c = windReadings[2];
+    float medianSpeed;
+    
+    // 3-point Median Logic
+    if ((a <= b && b <= c) || (c <= b && b <= a)) medianSpeed = b;
+    else if ((b <= a && a <= c) || (c <= a && a <= b)) medianSpeed = a;
+    else medianSpeed = c;
+    
+    Serial.print("SKY TEMP:");
+    Serial.print(skyTemp);
+    Serial.print(",WIND:");
+    Serial.println(medianSpeed);
+
+    windPulses = 0;
+    lastMillis = millis();
+    digitalWrite(LED_BUILTIN, LOW);
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
