@@ -45,6 +45,7 @@ class SumnerHUD:
         self.path_hours = "/home/pi/allsky_guard/hours.txt"
         self.path_notes = "/home/pi/allsky_guard/dossier.txt"
         self.path_thresh = "/home/pi/allsky_guard/cloud_threshold.txt"
+        self.path_star_thresh = "/home/pi/allsky_guard/star_threshold.txt"
         self.path_seestar_ip = "/home/pi/allsky_guard/seestar_ip.txt"
         self.path_fingerbot_mac = "/home/pi/allsky_guard/fingerbot_mac.txt"
         self.path_roof_cmd = "/home/pi/allsky_guard/roof_cmd.txt"
@@ -63,15 +64,22 @@ class SumnerHUD:
         self.emergency_sent = False
         self.dusk_sent_today = None
         
-        # --- AI TUNING DEFAULTS (Applied sensitivity fixes) ---
+        # --- AI TUNING DEFAULTS ---
         self.ai_brightness_trigger = 60.0
         self.ai_color_trigger = 7.0
+        self.star_threshold = 18
 
         self.cloud_threshold = 30.0
         if os.path.exists(self.path_thresh):
             try:
                 with open(self.path_thresh, "r") as f:
                     self.cloud_threshold = float(f.read().strip())
+            except: pass
+
+        if os.path.exists(self.path_star_thresh):
+            try:
+                with open(self.path_star_thresh, "r") as f:
+                    self.star_threshold = int(f.read().strip())
             except: pass
             
         if os.path.exists(self.path_seestar_ip):
@@ -108,7 +116,9 @@ class SumnerHUD:
             print(f"Email Error: {e}")
 
     def run_ai_clear_check(self):
+        """Dusk-to-Dawn AI logic: Only runs when camera is on and sky is dark."""
         if not os.path.exists(self.path_allsky):
+            self.btn_ai.config(text="NO IMAGE", bg="#555")
             return
 
         try:
@@ -117,52 +127,44 @@ class SumnerHUD:
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             avg_brightness = np.mean(gray)
 
-            # --- BLOB DETECTION (CLOUDS) ---
+            # --- DAYTIME / CAMERA OFF SHIELD ---
+            if avg_brightness > self.ai_brightness_trigger:
+                self.btn_ai.config(text="DAYTIME / OFF", bg="#222")
+                return
+
+            # --- NIGHTTIME STAR & CLOUD ANALYSIS ---
             b_params = cv2.SimpleBlobDetector_Params()
             b_params.filterByArea = True
-            b_params.minArea = 150
+            b_params.minArea = 400 
             b_params.maxArea = 100000
             blob_detector = cv2.SimpleBlobDetector_create(b_params)
             blobs = blob_detector.detect(gray)
             blob_count = len(blobs)
 
-            # --- DAYTIME SMART LOGIC ---
-            if avg_brightness > self.ai_brightness_trigger: 
-                (b, g, r) = cv2.split(img.astype("float"))
-                rg = np.absolute(r - g)
-                yb = np.absolute(0.5 * (r + g) - b)
-                std_root = np.sqrt((np.std(rg) ** 2) + (np.std(yb) ** 2))
-                mean_root = np.sqrt((np.mean(rg) ** 2) + (np.mean(yb) ** 2))
-                colorfulness = std_root + (0.3 * mean_root)
-                
-                if colorfulness > self.ai_color_trigger:
-                    if blob_count < 3:
-                        status, color = "AI CLEAR", "#1E8449"
-                    else:
-                        status, color = "SOME CLOUDS", "#D4AC0D"
-                else: 
-                    status, color = "AI CLOUDY", "#922B21"
+            # --- TIGHTENED STAR ANALYSIS ---
+            s_params = cv2.SimpleBlobDetector_Params()
+            s_params.filterByArea = True
+            s_params.minArea = 12          # Increased from 5 to ignore hot pixels
+            s_params.maxArea = 100         # Keep a reasonable upper limit
             
-            # --- NIGHTTIME LOGIC ---
+            s_params.filterByCircularity = True
+            s_params.minCircularity = 0.8  # Increased from 0.7 to ignore reflections/streaks
+            
+            star_detector = cv2.SimpleBlobDetector_create(s_params)
+            stars = star_detector.detect(gray)
+            star_count = len(stars)
+
+            # --- DECISION LOGIC ---
+            if star_count >= self.star_threshold and blob_count < 8:
+                status, color = "AI CLEAR", "#1E8449"
+            elif blob_count <= 20:
+                status, color = "SOME CLOUDS", "#D4AC0D"
             else:
-                s_params = cv2.SimpleBlobDetector_Params()
-                s_params.filterByArea = True
-                s_params.minArea = 5
-                s_params.maxArea = 40
-                s_params.filterByCircularity = True
-                s_params.minCircularity = 0.7
-                star_detector = cv2.SimpleBlobDetector_create(s_params)
-                stars = star_detector.detect(gray)
-                star_count = len(stars)
+                status, color = "AI CLOUDY", "#922B21"
 
-                if star_count >= 18 and blob_count < 5:
-                    status, color = "AI CLEAR", "#1E8449"
-                elif 1 <= blob_count <= 24:
-                    status, color = "SOME CLOUDS", "#D4AC0D"
-                else:
-                    status, color = "AI CLOUDY", "#922B21"
-
-            self.btn_ai.config(text=status, bg=color)
+            # Combine status and counts with a newline for the button
+            self.btn_ai.config(text=f"{status}\n(S:{star_count} B:{blob_count})", bg=color)
+            
         except Exception as e:
             self.btn_ai.config(text="AI ERROR", bg="#555")
             print(f"AI Check Error: {e}")
@@ -245,24 +247,25 @@ class SumnerHUD:
         self.canvas.create_text(radar_center_x, 25, text="--- OBSERVATORY CONTROLS ---", fill="#FFCC00", font=("Arial", 12, "bold"))
         
         self.btn_open = tk.Button(self.root, text="OPEN ROOF", bg="#1E8449", fg="white", font=("Arial", 9, "bold"), command=self.manual_open)
-        self.btn_open.place(x=radar_center_x - 165, y=50, width=100)
+        self.btn_open.place(x=radar_center_x - 180, y=50, width=100, height=40)
 
-        self.btn_ai = tk.Button(self.root, text="AI CHECKING", bg="#6C3483", fg="white", font=("Arial", 9, "bold"), command=self.run_ai_clear_check)
-        self.btn_ai.place(x=radar_center_x - 50, y=50, width=100)
+        # WIDER AI BUTTON WITH SPACE FOR TWO LINES OF TEXT
+        self.btn_ai = tk.Button(self.root, text="AI CHECKING", bg="#6C3483", fg="white", font=("Arial", 8, "bold"), command=self.run_ai_clear_check)
+        self.btn_ai.place(x=radar_center_x - 65, y=50, width=130, height=40)
 
         self.btn_close = tk.Button(self.root, text="CLOSE ROOF", bg="#922B21", fg="white", font=("Arial", 9, "bold"), command=self.manual_close)
-        self.btn_close.place(x=radar_center_x + 65, y=50, width=100)
+        self.btn_close.place(x=radar_center_x + 80, y=50, width=100, height=40)
 
         # --- AI ADJUSTMENT SLIDERS ---
-        self.canvas.create_text(radar_center_x - 110, 95, text="BRIGHT:", fill="white", font=("Arial", 8, "bold"))
+        self.canvas.create_text(radar_center_x - 110, 110, text="BRIGHT:", fill="white", font=("Arial", 8, "bold"))
         self.ai_bright_slider = tk.Scale(self.root, from_=10, to=200, orient='horizontal', bg='black', fg='white', troughcolor='#333', length=80, highlightthickness=0, font=("Arial", 7), command=self.update_ai_bright)
         self.ai_bright_slider.set(self.ai_brightness_trigger)
-        self.ai_bright_slider.place(x=radar_center_x - 85, y=80)
+        self.ai_bright_slider.place(x=radar_center_x - 85, y=95)
 
-        self.canvas.create_text(radar_center_x + 35, 95, text="COLOR:", fill="white", font=("Arial", 8, "bold"))
+        self.canvas.create_text(radar_center_x + 35, 110, text="COLOR:", fill="white", font=("Arial", 8, "bold"))
         self.ai_color_slider = tk.Scale(self.root, from_=2, to=50, orient='horizontal', bg='black', fg='white', troughcolor='#333', length=80, highlightthickness=0, font=("Arial", 7), command=self.update_ai_color)
         self.ai_color_slider.set(self.ai_color_trigger)
-        self.ai_color_slider.place(x=radar_center_x + 60, y=80)
+        self.ai_color_slider.place(x=radar_center_x + 60, y=95)
 
         self.net_status_text = self.canvas.create_text(self.sw - 20, 20, text="NET: CHECKING...", font=("Arial", 10, "bold"), fill="cyan", anchor="ne")
 
@@ -283,7 +286,7 @@ class SumnerHUD:
         self.val_sky   = self.add_sensor_line("🌡️", "SKY TEMP:", rx + 15, y_off, "#AAB7B8", box_w)
         self.val_cloud = self.add_sensor_line("☁️", "SKY COND:", rx + 15, y_off + spacing, "#5DADE2", box_w)
         
-        self.slider = tk.Scale(self.root, from_=5, to=60, orient='horizontal', bg='#050505', fg='white', troughcolor='#500', activebackground='red', highlightthickness=0, font=("Arial", 8), command=self.update_threshold)
+        self.slider = tk.Scale(self.root, from_=5, to=100, orient='horizontal', bg='#050505', fg='white', troughcolor='#500', activebackground='red', highlightthickness=0, font=("Arial", 8), command=self.update_threshold)
         self.slider.set(self.cloud_threshold)
         self.slider.place(x=rx + 55, y=y_off + spacing + 18, width=box_w - 80)
 
@@ -372,8 +375,10 @@ class SumnerHUD:
             with open(self.path_fingerbot_mac, "w") as f: f.write(bt_entry.get().strip())
             with open(self.path_email, "w") as f: f.write(mail_entry.get().strip())
             with open(self.path_notes, 'w') as f: f.write(txt.get('1.0', 'end'))
+            with open(self.path_star_thresh, 'w') as f: f.write(str(star_slider.get()))
             self.seestar_ip = ip_entry.get().strip()
             self.email_receiver = mail_entry.get().strip()
+            self.star_threshold = star_slider.get()
             d_win.destroy()
 
         def reset_hrs():
@@ -385,6 +390,13 @@ class SumnerHUD:
         tk.Button(btn_f, text="♻ RESET", bg="#D4AC0D", command=reset_hrs).pack(side="left", padx=10)
         tk.Button(btn_f, text="🔄 SYNC", bg="#4B0082", fg="white", command=lambda: subprocess.Popen(["python3", self.path_sync_script])).pack(side="left", padx=5)
         tk.Button(btn_f, text="🤖 TEST BOT", bg="orange", command=self.trigger_fingerbot).pack(side="left", padx=5)
+        
+        # Star Threshold Slider
+        tk.Label(btn_f, text="STARS:", bg="#050505", fg="white", font=("Arial", 8)).pack(side="left", padx=(10, 2))
+        star_slider = tk.Scale(btn_f, from_=5, to=100, orient='horizontal', bg='#050505', fg='white', troughcolor='#333', length=80, highlightthickness=0, font=("Arial", 7))
+        star_slider.set(self.star_threshold)
+        star_slider.pack(side="left", padx=5)
+        
         tk.Button(btn_f, text="💾 SAVE", bg="#1E8449", fg="white", command=save_all).pack(side="right", padx=20)
 
     def check_cleaning_reminder(self):
