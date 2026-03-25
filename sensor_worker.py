@@ -19,38 +19,50 @@ GPIO.setmode(GPIO.BCM)
 GPIO.setup(RAIN_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
 def connect_serial():
-    """Establishes connection to the Arduino"""
+    """Establishes a clean connection to the Arduino with buffer clearing."""
     try:
+        # Check if the device path actually exists before trying to open
+        if not os.path.exists(USB_PORT):
+            return None
+            
         s = serial.Serial(USB_PORT, 9600, timeout=2)
-        time.sleep(2) # Wait for Arduino reset
+        time.sleep(2) # Wait for Arduino reset/bootup
+        s.reset_input_buffer() # Clear any junk data from the freeze
+        s.flush()
+        print(f"Successfully connected to Arduino on {USB_PORT}")
         return s
-    except:
+    except Exception as e:
+        print(f"Serial Connection Failed: {e}")
         return None
 
 def arduino_reader():
-    """Reads comma-separated Sky and Wind data from Arduino"""
+    """Reads comma-separated Sky and Wind data with auto-reconnect logic."""
     global latest_sky_temp, latest_wind_speed
     ser = connect_serial()
+    
     while True:
-        if ser:
+        if ser and ser.is_open:
             try:
                 if ser.in_waiting > 0:
                     line = ser.readline().decode('utf-8', errors='ignore').strip()
                     # Expecting format: "SKY TEMP:46.09,WIND:0.00"
                     if "SKY TEMP" in line and "WIND" in line:
                         parts = line.split(",")
-                        # Correctly extract Sky Temp (46.09)
                         temp_raw = parts[0].split(":")[1].strip()
                         latest_sky_temp = f"{temp_raw} F"
                         try:
-                            # Correctly extract Wind Speed (0.00)
                             latest_wind_speed = float(parts[1].split(":")[1].strip())
                         except:
                             pass
-            except:
-                ser = connect_serial() 
+            except (serial.SerialException, OSError) as e:
+                print(f"Lost Arduino connection: {e}")
+                if ser: ser.close()
+                ser = None # Trigger reconnect logic below
         else:
+            # Reconnect attempt
+            time.sleep(5) # Don't hammer the CPU/USB port
             ser = connect_serial()
+            
         time.sleep(0.1)
 
 def get_bme_data():
@@ -74,7 +86,7 @@ def set_heater_state(is_on):
 threading.Thread(target=arduino_reader, daemon=True).start()
 
 last_check = time.time()
-print("Sensor Worker started (Integrated Arduino Wind/Sky)...")
+print("Sensor Worker started (Integrated Arduino Wind/Sky with Auto-Reconnect)...")
 
 while True:
     time.sleep(5) 
@@ -82,7 +94,7 @@ while True:
     # --- 1. COLLECT DATA ---
     amb_f, hum_val, pre_str = get_bme_data()
     is_wet = GPIO.input(RAIN_PIN) == GPIO.LOW
-    speed = latest_wind_speed # Now uses the Arduino value
+    speed = latest_wind_speed 
     
     # --- 2. LOGIC ---
     heater_status = "OFF"
@@ -97,6 +109,7 @@ while True:
         else:
             set_heater_state(False)
     
+    # Safety logic: If wind is excessive or rain detected, command roof close
     if is_wet or speed > 20.0:
         subprocess.run(["pinctrl", "set", str(ROOF_PIN), "dh"])
         status = "CLOSED/LOCKED"
@@ -116,6 +129,7 @@ while True:
         new_total = total + elapsed
         with open(PATH_HOURS, "w") as hf: hf.write(f"{new_total:.4f}")
         
+        # [cite: 2026-01-17]
         if new_total >= 1000.0:
             maint_alert = "CLEANING REQUIRED"
     except:
