@@ -1,17 +1,4 @@
 [ OBSERVATORY DOSSIER ]
-Last Service: 03/10/2026
-----------------
-
----- SYSTEM ARCHITECTURE (2026 SSD BUILD) ---
-Owner: Sumner Observatory
-Hardware: Raspberry Pi 5 / NVMe SSD
-Software: Sumner Guard v6.0 + indi-allsky
-
---- GPIO & SENSOR MAP ---
-- I2C (Bus 1): BME280 (Temp/Hum) & MLX90614 (Sky IR)
-- GPIO 17: Roof Position (Open/Closed)
-- GPIO 27: RG-11 Rain Sensor (Pulse)
-- GPIO 04: Anemometer (Wind Speed Pulse)
 
 --- FILE DIRECTORY ---
 - Main Folder: /home/pi/allsky_guard/
@@ -100,6 +87,102 @@ void loop() {
     digitalWrite(LED_BUILTIN, LOW);
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
