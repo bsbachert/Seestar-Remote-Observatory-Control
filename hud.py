@@ -1,8 +1,10 @@
 import tkinter as tk
-from tkinter import messagebox, scrolledtext
+from tkinter import messagebox, scrolledtext, ttk
 from PIL import Image, ImageTk, ImageDraw
-import os, subprocess, random, math, sys, fcntl, socket
+import os, subprocess, random, math, sys, fcntl, socket, time
 import smtplib
+import requests
+import webbrowser
 from email.message import EmailMessage
 from datetime import datetime, timedelta
 import cv2
@@ -10,8 +12,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import shutil
 
-# --- SINGLE INSTANCE SHIELD ---
 try:
     lock_file = open('/tmp/sumner_hud.lock', 'w')
     fcntl.lockf(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -21,15 +23,18 @@ except:
 class SumnerHUD:
     def __init__(self, root):
         self.root = root
-        self.sw = self.root.winfo_screenwidth()
-        self.sh = self.root.winfo_screenheight()
-        self.root.attributes('-fullscreen', True, "-topmost", True)
+        self.root.attributes('-fullscreen', True)
+        self.root.attributes("-topmost", True)
         self.root.config(bg='black')
 
-        # --- EMAIL CREDENTIALS ---
+        self.sw = self.root.winfo_screenwidth()
+        self.sh = self.root.winfo_screenheight()
+
+        # Existing Configuration
         self.email_sender = "bsbachert@gmail.com"
         self.email_pass = "pucapkfuesrrnasm" 
         self.path_email = "/home/pi/allsky_guard/email_receiver.txt"
+        self.path_dew_cmd = "/home/pi/allsky_guard/dew_cmd.txt"
         self.email_receiver = "bsbachert@gmail.com"
         
         if os.path.exists(self.path_email):
@@ -39,8 +44,9 @@ class SumnerHUD:
                     if content: self.email_receiver = content
             except: pass
 
-        # --- PATHS ---
+        # File Paths
         self.path_allsky = "/var/www/html/allsky/images/latest.jpg"
+        self.path_prev_sky = "/tmp/prev_allsky.jpg"
         self.path_radar = "/home/pi/allsky_guard/radar.png"
         self.path_clock = "/home/pi/allsky_guard/clock.png" 
         self.path_sensors = "/home/pi/allsky_guard/sensors.txt"
@@ -48,7 +54,6 @@ class SumnerHUD:
         self.path_hours = "/home/pi/allsky_guard/hours.txt"
         self.path_notes = "/home/pi/allsky_guard/dossier.txt"
         self.path_thresh = "/home/pi/allsky_guard/cloud_threshold.txt"
-        self.path_star_thresh = "/home/pi/allsky_guard/star_threshold.txt"
         self.path_seestar_ip = "/home/pi/allsky_guard/seestar_ip.txt"
         self.path_fingerbot_mac = "/home/pi/allsky_guard/fingerbot_mac.txt"
         self.path_roof_cmd = "/home/pi/allsky_guard/roof_cmd.txt"
@@ -62,42 +67,77 @@ class SumnerHUD:
         self.seestar_ip = "0.0.0.0"
         self.last_allsky_ts = 0
         self.last_log_time = 0 
-        
         self.last_roof_safety_state = None
         self.emergency_sent = False
         self.dusk_sent_today = None
-        
-        self.ai_brightness_trigger = 60.0
-        self.ai_color_trigger = 7.0
-        self.star_threshold = 18
+        self.ai_sky_status = "INITIALIZING"
+        self.is_wet = False
+        self.is_obscured = False
+        self.maintenance_alerted = False
 
-        self.cloud_threshold = 30.0
+        self.cloud_motion_threshold = 8.0
         if os.path.exists(self.path_thresh):
             try:
                 with open(self.path_thresh, "r") as f:
-                    self.cloud_threshold = float(f.read().strip())
+                    self.cloud_motion_threshold = float(f.read().strip())
             except: pass
 
-        if os.path.exists(self.path_star_thresh):
-            try:
-                with open(self.path_star_thresh, "r") as f:
-                    self.star_threshold = int(f.read().strip())
-            except: pass
-            
         if os.path.exists(self.path_seestar_ip):
             try:
                 with open(self.path_seestar_ip, "r") as f:
                     self.seestar_ip = f.read().strip()
             except: pass
 
-        self.canvas = tk.Canvas(root, width=self.sw, height=self.sh, bg='black', highlightthickness=0)
-        self.canvas.pack()
-        
-        self.draw_stars()
+        # UI Layout setup
+        self.root.grid_rowconfigure(0, weight=1)
+        self.root.grid_rowconfigure(1, weight=10)
+        self.root.grid_rowconfigure(2, weight=3)
+        self.root.grid_columnconfigure(0, weight=3)
+        self.root.grid_columnconfigure(1, weight=1)
+
         self.create_ui_elements()
         self.check_cleaning_reminder()
         self.send_email_notification("System Power Recovery", "The Observatory HUD has restarted successfully.")
+        
+        self.root.bind("<Configure>", self.on_window_resize)
+        self.root.bind("<Map>", self.on_restore)
+        
+        self.fetch_online_wind_dir()
+        self.fetch_radar_auto()
         self.update_loop()
+
+    # --- Location Helper ---
+    def get_radar_coords(self):
+        try:
+            with open(self.path_radar_id, 'r') as file:
+                station_id = file.read().strip().upper()
+        except:
+            station_id = "GRR"
+        
+        radar_map = {
+            "GRR": {"lat": "42.88", "lon": "-85.52"},
+            "DTX": {"lat": "42.70", "lon": "-83.47"},
+            "APX": {"lat": "44.91", "lon": "-84.72"},
+        }
+        return radar_map.get(station_id, radar_map["GRR"])
+
+    # --- Existing Helper Methods ---
+    def minimize_hud(self):
+        self.root.attributes("-topmost", False)
+        self.root.iconify()
+
+    def on_restore(self, event):
+        if event.widget == self.root and self.root.state() == 'normal':
+            self.root.attributes("-topmost", True)
+
+    def toggle_dew(self):
+        current_text = self.btn_dew.cget("text")
+        if "AUTO" in current_text:
+            self.btn_dew.config(text="DEW HTR: ON", bg="#900")
+            with open(self.path_dew_cmd, "w") as f: f.write("ON")
+        else:
+            self.btn_dew.config(text="DEW HTR: AUTO", bg="#333")
+            with open(self.path_dew_cmd, "w") as f: f.write("OFF")
 
     def send_email_notification(self, subject, body):
         try:
@@ -117,81 +157,70 @@ class SumnerHUD:
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         log_entry = f"{now_str} | Amb:{amb:.1f} | Hum:{hum:.0f} | Wind:{wind:.1f} | Pres:{pres:.2f} | SkyDiff:{sky_diff:.1f}\n"
         try:
-            with open(self.path_sensors_log, "a") as f:
-                f.write(log_entry)
-        except Exception as e:
-            print(f"Logging Error: {e}")
+            with open(self.path_sensors_log, "a") as f: f.write(log_entry)
+        except Exception as e: print(f"Logging Error: {e}")
 
     def shutdown(self):
-        """Releases the system lock and closes the application."""
         try:
             fcntl.lockf(lock_file, fcntl.LOCK_UN)
             lock_file.close()
-            if os.path.exists('/tmp/sumner_hud.lock'):
-                os.remove('/tmp/sumner_hud.lock')
-        except Exception as e:
-            print(f"Shutdown Error: {e}")
-        
+            if os.path.exists('/tmp/sumner_hud.lock'): os.remove('/tmp/sumner_hud.lock')
+        except Exception as e: print(f"Shutdown Error: {e}")
         self.root.destroy()
         sys.exit(0)
 
+    def on_window_resize(self, event):
+        if event.widget == self.root:
+            self.sw = event.width
+            self.sh = event.height
+
     def run_ai_clear_check(self, manual_click=False):
-        if not os.path.exists(self.path_allsky):
-            self.btn_ai.config(text="NO IMAGE", bg="#555")
-            return
-        try:
-            img = cv2.imread(self.path_allsky)
-            if img is None: return
-            h, w = img.shape[:2]
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            if np.mean(gray) > self.ai_brightness_trigger:
-                self.btn_ai.config(text="DAYTIME / OFF", bg="#222")
-                return
-            mask = np.zeros((h, w), dtype=np.uint8)
-            cx, cy = int(w / 2), int(h / 2)
-            radius = int(h * 0.38)
-            cv2.circle(mask, (cx, cy), radius, 255, -1)
-            cutoff_x = int(cx - (radius * 0.50)) 
-            cv2.rectangle(mask, (0, 0), (cutoff_x, h), 0, -1)
-            masked_gray = cv2.bitwise_and(gray, gray, mask=mask)
-            b_params = cv2.SimpleBlobDetector_Params()
-            b_params.filterByArea = True
-            b_params.minArea = 400 
-            blob_detector = cv2.SimpleBlobDetector_create(b_params)
-            blobs = blob_detector.detect(masked_gray)
-            blob_count = len(blobs)
-            s_params = cv2.SimpleBlobDetector_Params()
-            s_params.filterByArea, s_params.minArea, s_params.maxArea = True, 10, 150
-            s_params.filterByCircularity, s_params.minCircularity = True, 0.8  
-            star_detector = cv2.SimpleBlobDetector_create(s_params)
-            stars = star_detector.detect(masked_gray)
-            star_count = len(stars)
-            debug_path = "/tmp/star_debug.jpg"
-            debug_img = img.copy()
-            cv2.circle(debug_img, (cx, cy), radius, (0, 255, 255), 2)
-            cv2.line(debug_img, (cutoff_x, cy - radius), (cutoff_x, cy + radius), (0, 0, 255), 3)
-            for s in stars:
-                cv2.circle(debug_img, (int(s.pt[0]), int(s.pt[1])), 15, (0, 0, 255), 2)
-            cv2.imwrite(debug_path, debug_img)
-            if star_count >= self.star_threshold and blob_count < 2:
-                status, color = "AI CLEAR", "#1E8449"
-            elif blob_count <= 4:
-                status, color = "SOME CLOUDS", "#D4AC0D"
-            else:
-                status, color = "AI CLOUDY", "#922B21"
-            self.btn_ai.config(text=f"{status}\n(S:{star_count} B:{blob_count})", bg=color)
-            if manual_click: self.popout(debug_path)
-        except Exception as e:
-            self.btn_ai.config(text="AI ERROR", bg="#555")
-            print(f"AI Check Error: {e}")
+        if not os.path.exists(self.path_allsky): return
+        
+        current_img = cv2.imread(self.path_allsky)
+        gray_curr = cv2.cvtColor(current_img, cv2.COLOR_BGR2GRAY)
+        
+        # 1. DOME OBSTRUCTION CHECK (Safety First)
+        variance = cv2.Laplacian(gray_curr, cv2.CV_64F).var()
+        is_obscured = (variance < 25.0)
+        
+        # 2. TIME-BASED FOLDER SELECTION
+        hour = datetime.now().hour
+        if 6 <= hour < 17: folder = "day"
+        elif 17 <= hour < 20: folder = "evening"
+        else: folder = "night"
+        ref_folder = f"/home/pi/allsky_guard/ref/{folder}/"
+        
+        # 3. TEMPLATE MATCHING
+        best_match = "UNCERTAIN"
+        highest_score = -1.0
+        gray_curr_blurred = cv2.GaussianBlur(gray_curr, (5, 5), 0)
+        
+        if os.path.exists(ref_folder):
+            for ref_file in os.listdir(ref_folder):
+                if not ref_file.endswith(".jpg"): continue
+                ref_img = cv2.imread(os.path.join(ref_folder, ref_file), cv2.IMREAD_GRAYSCALE)
+                ref_img = cv2.resize(ref_img, (gray_curr_blurred.shape[1], gray_curr_blurred.shape[0]))
+                
+                score = cv2.matchTemplate(gray_curr_blurred, ref_img, cv2.TM_CCOEFF_NORMED)[0][0]
+                if score > highest_score:
+                    highest_score = score
+                    best_match = ref_file.replace(".jpg", "").replace("_", " ")
 
-    def update_ai_bright(self, val): self.ai_brightness_trigger = float(val)
-    def update_ai_color(self, val): self.ai_color_trigger = float(val)
+        # 4. CONSOLIDATED STATUS
+        if is_obscured:
+            self.ai_sky_status = "OBSCURED"
+            status, color = "AI: DOME OBSCURED", "#922B21"
+        else:
+            self.ai_sky_status = best_match.upper()
+            color = "#1E8449" if "CLEAR" in self.ai_sky_status else "#D4AC0D"
+            status = f"AI: {self.ai_sky_status}"
 
-    def open_browser(self):
-        url = "http://localhost:5432"
-        try: subprocess.Popen(["/usr/bin/chromium", f"--app={url}", f"--window-size={int(self.sw*0.75)},{int(self.sh*0.85)}", "--window-position=20,80"])
-        except: subprocess.Popen(["x-www-browser", url])
+        self.btn_ai.config(text=f"{status}\n({folder.upper()} | Var: {variance:.1f})", bg=color)
+        
+        if self.btn_dew and "AUTO" in self.btn_dew.cget("text"):
+            with open(self.path_dew_cmd, "w") as f:
+                f.write("ON" if is_obscured else "OFF")
 
     def manual_open(self):
         with open(self.path_roof_cmd, "w") as f: f.write("OPEN")
@@ -207,6 +236,17 @@ class SumnerHUD:
             self.power_btn.config(bg="red", text="⚡ SENDING...")
             self.root.after(2000, lambda: self.power_btn.config(bg="#900", text="⚡ SEESTAR"))
         except: messagebox.showerror("ERROR", "Could not run seestar_push.py")
+
+    def open_seestar_alp(self):
+        # Drop topmost so the browser isn't trapped behind the fullscreen HUD
+        self.root.attributes("-topmost", False)
+        target_url = "http://localhost:5432/"
+        try:
+            # Try to launch chromium in a clean app window
+            subprocess.Popen(["chromium-browser", f"--app={target_url}"])
+        except Exception:
+            # Fallback to default browser
+            webbrowser.open(target_url)
 
     def run_health_check(self):
         report = []
@@ -227,13 +267,8 @@ class SumnerHUD:
             return "LOCAL (WiFi)", "lightgreen"
         except: return "UNKNOWN", "gray"
 
-    def update_threshold(self, val):
-        self.cloud_threshold = float(val)
-        try:
-            with open(self.path_thresh, "w") as f: f.write(str(self.cloud_threshold))
-        except: pass
-
     def create_placeholder(self, text, w, h):
+        if w <= 0 or h <= 0: w, h = 100, 100
         img = Image.new('RGB', (w, h), color=(15, 15, 15))
         draw = ImageDraw.Draw(img)
         draw.rectangle([0, 0, w-1, h-1], outline="red", width=3)
@@ -241,6 +276,7 @@ class SumnerHUD:
         return ImageTk.PhotoImage(img)
 
     def load_scale(self, path, w, h, label):
+        if w <= 0 or h <= 0: w, h = 100, 100
         if not os.path.exists(path) or os.path.getsize(path) < 100:
             return self.create_placeholder(f"SET {label} ID\nIN DOSSIER", w, h)
         try:
@@ -250,87 +286,99 @@ class SumnerHUD:
                 return ImageTk.PhotoImage(img)
         except: return self.create_placeholder(f"ERROR LOADING\n{label}", w, h)
 
-    def create_ui_elements(self):
-        radar_center_x = self.sw * 0.53
-        self.canvas.create_text(radar_center_x, 25, text="--- OBSERVATORY CONTROLS ---", fill="#FFCC00", font=("Arial", 12, "bold"))
-        self.btn_open = tk.Button(self.root, text="OPEN ROOF", bg="#1E8449", fg="white", font=("Arial", 9, "bold"), command=self.manual_open)
-        self.btn_open.place(x=radar_center_x - 180, y=50, width=100, height=40)
-        self.btn_ai = tk.Button(self.root, text="AI CHECKING", bg="#6C3483", fg="white", font=("Arial", 8, "bold"), command=lambda: self.run_ai_clear_check(manual_click=True))
-        self.btn_ai.place(x=radar_center_x - 65, y=50, width=130, height=40)
-        self.btn_close = tk.Button(self.root, text="CLOSE ROOF", bg="#922B21", fg="white", font=("Arial", 9, "bold"), command=self.manual_close)
-        self.btn_close.place(x=radar_center_x + 80, y=50, width=100, height=40)
-        self.canvas.create_text(radar_center_x - 110, 110, text="BRIGHT:", fill="white", font=("Arial", 8, "bold"))
-        self.ai_bright_slider = tk.Scale(self.root, from_=10, to=200, orient='horizontal', bg='black', fg='white', troughcolor='#333', length=80, highlightthickness=0, font=("Arial", 7), command=self.update_ai_bright)
-        self.ai_bright_slider.set(self.ai_brightness_trigger)
-        self.ai_bright_slider.place(x=radar_center_x - 85, y=95)
-        self.canvas.create_text(radar_center_x + 35, 110, text="COLOR:", fill="white", font=("Arial", 8, "bold"))
-        self.ai_color_slider = tk.Scale(self.root, from_=2, to=50, orient='horizontal', bg='black', fg='white', troughcolor='#333', length=80, highlightthickness=0, font=("Arial", 7), command=self.update_ai_color)
-        self.ai_color_slider.set(self.ai_color_trigger)
-        self.ai_color_slider.place(x=radar_center_x + 60, y=95)
-        self.net_status_text = self.canvas.create_text(self.sw - 20, 20, text="NET: CHECKING...", font=("Arial", 10, "bold"), fill="cyan", anchor="ne")
-        
-        # --- FIX: Updated Exit Button to call shutdown method ---
-        tk.Button(self.root, text="EXIT HUD", command=self.shutdown, bg="#500", fg="white", font=("Arial", 9, "bold")).place(x=20, y=20, width=100)
-        
-        tk.Button(self.root, text="Weather\nHistory", command=self.show_weather_history, bg="#003366", fg="white", font=("Arial", 8, "bold")).place(x=20, y=65, width=100, height=40)
-        tk.Button(self.root, text="MAINT / DOSSIER", command=self.open_dossier, bg="#222", fg="white", font=("Arial", 9, "bold")).place(x=140, y=20, width=120)
-        self.power_btn = tk.Button(self.root, text="⚡ SEESTAR", command=self.trigger_fingerbot, bg="#900", fg="white", font=("Arial", 9, "bold"))
-        self.power_btn.place(x=280, y=20, width=100)
-        self.btn_control = tk.Button(self.root, text="🔭 CONTROL", bg="#2874A6", fg="white", font=("Arial", 9, "bold"), command=self.open_browser)
-        self.btn_control.place(x=400, y=20, width=100)
-        self.btn_health = tk.Button(self.root, text="🩺 SYSTEM CHECK", bg="#5D6D7E", fg="white", font=("Arial", 9, "bold"), command=self.run_health_check)
-        self.btn_health.place(x=520, y=20, width=130)
-        box_w, box_h = int(self.sw * 0.25), int(self.sh * 0.85)
-        rx, ry = self.sw - box_w - 20, 40
-        self.canvas.create_rectangle(rx, ry, rx + box_w, ry + box_h, fill='#050505', outline='#00FFCC', width=3)
-        y_off, spacing = ry + 45, box_h // 13.5
-        self.val_sky   = self.add_sensor_line("🌡️", "SKY TEMP:", rx + 15, y_off, "#AAB7B8", box_w)
-        self.val_cloud = self.add_sensor_line("☁️", "SKY COND:", rx + 15, y_off + spacing, "#5DADE2", box_w)
-        self.slider = tk.Scale(self.root, from_=5, to=100, orient='horizontal', bg='#050505', fg='white', troughcolor='#500', activebackground='red', highlightthickness=0, font=("Arial", 8), command=self.update_threshold)
-        self.slider.set(self.cloud_threshold)
-        self.slider.place(x=rx + 55, y=y_off + spacing + 18, width=box_w - 80)
-        y_mid = y_off + (spacing * 2.8)
-        self.val_amb   = self.add_sensor_line("🌡️", "AMB TEMP:", rx + 15, y_mid, "#EC7063", box_w)
-        self.val_hum   = self.add_sensor_line("💧", "HUMIDITY:", rx + 15, y_mid + spacing, "#5499C7", box_w)
-        self.val_dew   = self.add_sensor_line("✨", "DEW POINT:", rx + 15, y_mid + spacing*2, "#A569BD", box_w)
-        self.val_heat  = self.add_sensor_line("🔥", "DEW HEAT:", rx + 15, y_mid + spacing*3, "#FF5733", box_w)
-        self.val_pres  = self.add_sensor_line("⏲️", "PRESSURE:", rx + 15, y_mid + spacing*4, "#58D68D", box_w)
-        self.val_wind  = self.add_sensor_line("💨", "WIND SPD:", rx + 15, y_mid + spacing*5, "#F4D03F", box_w)
-        self.val_rain  = self.add_sensor_line("☔", "RAIN DET:", rx + 15, y_mid + spacing*6, "#AF7AC5", box_w)
-        self.val_dome  = self.add_sensor_line("🏠", "ROOF STAT:", rx + 15, y_mid + spacing*7, "#EB984E", box_w)
-        y_bot = y_mid + spacing*9
-        self.val_alpaca = self.add_sensor_line("🔭", "ALPACA LINK:", rx + 15, y_bot - spacing, "#00FF00", box_w)
-        self.val_hrs   = self.add_sensor_line("⌛", "OP HOURS:", rx + 15, y_bot, "#FFCC00", box_w)
-        self.sync_light = self.canvas.create_oval(rx + 15, y_bot - 8, rx + 31, y_bot + 8, fill="gray", outline="white")
-        self.all_img_id = self.canvas.create_image(self.sw*0.22, self.sh*0.4, anchor='center', tags="zoom")
-        self.rad_img_id = self.canvas.create_image(radar_center_x, self.sh*0.4, anchor='center', tags="zoom")
-        self.clk_img_id = self.canvas.create_image(self.sw*0.38, self.sh*0.82, anchor='center', tags="zoom")
-        self.canvas.tag_bind(self.all_img_id, "<Button-1>", lambda e: self.popout(self.path_allsky))
-        self.canvas.tag_bind(self.rad_img_id, "<Button-1>", lambda e: self.popout(self.path_radar))
-        self.canvas.tag_bind(self.clk_img_id, "<Button-1>", lambda e: self.popout(self.path_clock))
+    def check_cleaning_reminder(self):
+        if os.path.exists(self.path_hours):
+            try:
+                with open(self.path_hours, "r") as f:
+                    hrs = float(f.read().strip())
+                    if hrs >= 1000.0: messagebox.showwarning("MAINTENANCE", f"Alert: {hrs:.1f} Hours. Clean dome.")
+            except: pass
 
-    def add_sensor_line(self, icon, label, x, y, color, box_w):
-        f_size = 11 if self.sw > 1000 else 8
-        self.canvas.create_text(x, y, text=icon, anchor='w', fill=color, font=("Arial", 16))
-        self.canvas.create_text(x + 40, y, text=label, anchor='w', fill="white", font=("Arial", f_size, "bold"))
-        return self.canvas.create_text(x + box_w - 30, y, text="--", anchor='e', fill="cyan", font=("Courier", 16, "bold"))
+    def check_alpaca_status(self):
+        if not self.seestar_ip or self.seestar_ip == "0.0.0.0": return False
+        try:
+            with socket.create_connection((self.seestar_ip, 32323), timeout=0.5): return True
+        except: return False
 
-    def popout(self, path):
-        if not os.path.exists(path): return
+    def show_weather_history(self):
+        if not os.path.exists(self.path_sensors_log):
+            messagebox.showerror("ERROR", "No sensor log file found.")
+            return
         pop = tk.Toplevel(self.root)
         pop.attributes("-fullscreen", True, "-topmost", True)
         pop.config(bg='black')
-        img = Image.open(path)
-        if "latest.jpg" in path.lower():
-            img.thumbnail((int(self.sw * 0.95), int(self.sh * 0.95)), Image.Resampling.LANCZOS)
-        elif "radar" in path.lower() or "star_debug" in path.lower():
-            new_h = int(self.sh * 0.88); ratio = new_h / float(img.size[1]);
-            new_w = int(float(img.size[0]) * ratio)
-            img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-        else:
-            img.thumbnail((int(self.sw * 0.8), int(self.sh * 0.8)), Image.Resampling.LANCZOS)
-        self.p_img = ImageTk.PhotoImage(img)
-        tk.Button(pop, image=self.p_img, bg='black', bd=0, activebackground='black', command=pop.destroy).pack(expand=True)
+        times, temps, hums, winds, press, sky_diff = [], [], [], [], [], []
+        cutoff = datetime.now() - timedelta(hours=24)
+        try:
+            with open(self.path_sensors_log, "r") as f:
+                for line in f:
+                    parts = line.split('|')
+                    if len(parts) < 5: continue
+                    log_t = datetime.strptime(parts[0].strip(), '%Y-%m-%d %H:%M:%S')
+                    if log_t >= cutoff:
+                        times.append(log_t)
+                        temps.append(float(parts[1].split(':')[1]))
+                        hums.append(float(parts[2].split(':')[1]))
+                        winds.append(float(parts[3].split(':')[1]))
+                        press.append(float(parts[4].split(':')[1]))
+                        if len(parts) > 5: sky_diff.append(float(parts[5].split(':')[1]))
+        except Exception as e: print(f"Log Parse Error: {e}")
+        fig, axs = plt.subplots(5, 1, figsize=(10, 12), dpi=100, sharex=True)
+        fig.set_facecolor('black')
+        sets = [(temps, "TEMP (F)", "#EC7063"), (hums, "HUM (%)", "#5499C7"), (winds, "WIND (MPH)", "#F4D03F"), (press, "BARO (IN)", "#58D68D"), (sky_diff, "MOTION Δ", "#AAB7B8")]
+        for i, (data, label, color) in enumerate(sets):
+            if data: axs[i].plot(times, data, color=color, linewidth=1.5)
+            axs[i].set_ylabel(label, color='white', fontsize=8)
+            axs[i].set_facecolor('#0a0a0a')
+            axs[i].tick_params(colors='white', labelsize=7)
+            axs[i].xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+            axs[i].xaxis.set_major_locator(mdates.HourLocator(interval=2))
+            axs[i].grid(color='#333', linestyle='--')
+            for s in axs[i].spines.values(): s.set_color('#444')
+        plt.xticks(rotation=45)
+        tk.Button(pop, text="CLOSE", command=pop.destroy, bg="#500", fg="white", font=("Arial", 10, "bold")).pack(side="bottom", pady=10)
+        canvas = FigureCanvasTkAgg(fig, master=pop)
+        canvas.draw(); canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+    def fetch_online_wind_dir(self):
+        coords = self.get_radar_coords()
+        try:
+            url = f"https://api.open-meteo.com/v1/forecast?latitude={coords['lat']}&longitude={coords['lon']}&current_weather=true"
+            data = requests.get(url, timeout=5).json()
+            degrees = data['current_weather']['winddirection']
+            dirs = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW']
+            cardinal = dirs[round(degrees / (360. / len(dirs))) % len(dirs)]
+            self.right_panel.nametowidget(self.val_dir).config(text=f"{cardinal} ({degrees}°)")
+        except Exception as e:
+            print(f"Weather API Error: {e}")
+            self.right_panel.nametowidget(self.val_dir).config(text="API ERROR")
+        self.root.after(900000, self.fetch_online_wind_dir)
+
+    # --- NEW: Wind Direction Utility ---
+    def get_wind_direction(self, degrees):
+        """Converts numerical degrees into 8-sector cardinal directions."""
+        deg = float(degrees) % 360
+        sectors = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+        # Shift by 22.5 to ensure N is centered at 0/360
+        index = int(((deg + 22.5) % 360) / 45)
+        return sectors[index]
+
+    def update_hud(self, wind_data):
+        # ... logic to get degree from your sensor ...
+        direction_label = self.get_wind_direction(wind_data['degrees'])
+        
+        # Update the UI display
+        self.lbl_wind.config(text=f"WIND: {direction_label}")
+
+    def fetch_radar_auto(self):
+        """Silently runs get_radar.py in the background every 10 minutes."""
+        try:
+            subprocess.Popen(["python3", self.path_sync_script])
+        except Exception as e:
+            print(f"Radar sync error: {e}")
+            
+        # 600000 ms = 10 minutes. Adjust if you want it faster or slower.
+        self.root.after(600000, self.fetch_radar_auto)
 
     def open_dossier(self):
         d_win = tk.Toplevel(self.root)
@@ -365,196 +413,263 @@ class SumnerHUD:
             with open(self.path_fingerbot_mac, "w") as f: f.write(bt_entry.get().strip())
             with open(self.path_email, "w") as f: f.write(mail_entry.get().strip())
             with open(self.path_notes, 'w') as f: f.write(txt.get('1.0', 'end'))
-            with open(self.path_star_thresh, 'w') as f: f.write(str(star_slider.get()))
-            self.seestar_ip = ip_entry.get().strip(); self.email_receiver = mail_entry.get().strip(); self.star_threshold = star_slider.get(); d_win.destroy()
+            with open(self.path_thresh, 'w') as f: f.write(str(motion_slider.get()))
+            self.seestar_ip = ip_entry.get().strip()
+            self.email_receiver = mail_entry.get().strip()
+            self.cloud_motion_threshold = motion_slider.get()
+            d_win.destroy()
         def reset_hrs():
             if messagebox.askyesno("RESET", "Reset Timer to 0?"):
                 with open(self.path_hours, "w") as f: f.write("0.0")
+            
         btn_f = tk.Frame(d_win, bg="#050505")
         btn_f.grid(row=3, column=0, sticky="ew", pady=(10, 20))
         tk.Button(btn_f, text="♻ RESET", bg="#D4AC0D", command=reset_hrs).pack(side="left", padx=10)
-        tk.Button(btn_f, text="🔄 SYNC", bg="#4B0082", fg="white", command=lambda: subprocess.Popen(["python3", self.path_sync_script])).pack(side="left", padx=5)
+        tk.Button(btn_f, text="🔄 SYNC RADAR", bg="#4B0082", fg="white", command=lambda: subprocess.Popen(["python3", self.path_sync_script])).pack(side="left", padx=5)
         tk.Button(btn_f, text="🤖 TEST BOT", bg="orange", command=self.trigger_fingerbot).pack(side="left", padx=5)
-        tk.Label(btn_f, text="STARS:", bg="#050505", fg="white", font=("Arial", 8)).pack(side="left", padx=(10, 2))
-        star_slider = tk.Scale(btn_f, from_=5, to=100, orient='horizontal', bg='#050505', fg='white', troughcolor='#333', length=80, highlightthickness=0, font=("Arial", 7))
-        star_slider.set(self.star_threshold); star_slider.pack(side="left", padx=5)
+        
+        tk.Label(btn_f, text="MOTION %:", bg="#050505", fg="white", font=("Arial", 8)).pack(side="left", padx=(10, 2))
+        motion_slider = tk.Scale(btn_f, from_=1.0, to=30.0, resolution=0.5, orient='horizontal', bg='#050505', fg='white', troughcolor='#333', length=100, highlightthickness=0, font=("Arial", 7))
+        motion_slider.set(self.cloud_motion_threshold)
+        motion_slider.pack(side="left", padx=5)
         tk.Button(btn_f, text="💾 SAVE", bg="#1E8449", fg="white", command=save_all).pack(side="right", padx=20)
 
-    def check_cleaning_reminder(self):
-        if os.path.exists(self.path_hours):
-            try:
-                with open(self.path_hours, "r") as f:
-                    hrs = float(f.read().strip())
-                    if hrs >= 1000.0: messagebox.showwarning("MAINTENANCE", f"Alert: {hrs:.1f} Hours. Clean dome.")
-            except: pass
-
-    def draw_stars(self):
-        for _ in range(60):
-            x, y = random.randint(0, self.sw), random.randint(0, self.sh)
-            self.canvas.create_oval(x, y, x+1, y+1, fill='white', outline='white')
-
-    def check_alpaca_status(self):
-        if not self.seestar_ip or self.seestar_ip == "0.0.0.0": return False
-        try:
-            with socket.create_connection((self.seestar_ip, 32323), timeout=0.5): return True
-        except: return False
-
-    def show_weather_history(self):
-        if not os.path.exists(self.path_sensors_log):
-            messagebox.showerror("ERROR", "No sensor log file found.")
-            return
-        pop = tk.Toplevel(self.root)
-        pop.attributes("-fullscreen", True, "-topmost", True)
-        pop.config(bg='black')
-        times, temps, hums, winds, press, sky_diff = [], [], [], [], [], []
-        cutoff = datetime.now() - timedelta(hours=24)
-        try:
-            with open(self.path_sensors_log, "r") as f:
-                for line in f:
-                    parts = line.split('|')
-                    if len(parts) < 5: continue
-                    log_t = datetime.strptime(parts[0].strip(), '%Y-%m-%d %H:%M:%S')
-                    if log_t >= cutoff:
-                        times.append(log_t)
-                        temps.append(float(parts[1].split(':')[1]))
-                        hums.append(float(parts[2].split(':')[1]))
-                        winds.append(float(parts[3].split(':')[1]))
-                        press.append(float(parts[4].split(':')[1]))
-                        if len(parts) > 5: sky_diff.append(float(parts[5].split(':')[1]))
-        except Exception as e: print(f"Log Parse Error: {e}")
-
-        fig, axs = plt.subplots(5, 1, figsize=(10, 12), dpi=100, sharex=True)
-        fig.set_facecolor('black')
-        
-        sets = [
-            (temps, "TEMP (F)", "#EC7063"), 
-            (hums, "HUM (%)", "#5499C7"), 
-            (winds, "WIND (MPH)", "#F4D03F"), 
-            (press, "BARO (IN)", "#58D68D"), 
-            (sky_diff, "SKY Δ", "#AAB7B8")
-        ]
-        
-        for i, (data, label, color) in enumerate(sets):
-            if data: axs[i].plot(times, data, color=color, linewidth=1.5)
-            axs[i].set_ylabel(label, color='white', fontsize=8)
-            axs[i].set_facecolor('#0a0a0a')
-            axs[i].tick_params(colors='white', labelsize=7)
-            axs[i].xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-            axs[i].xaxis.set_major_locator(mdates.HourLocator(interval=2))
-            axs[i].grid(color='#333', linestyle='--')
-            for s in axs[i].spines.values(): s.set_color('#444')
-        
-        plt.xticks(rotation=45)
-        tk.Button(pop, text="CLOSE", command=pop.destroy, bg="#500", fg="white", font=("Arial", 10, "bold")).pack(side="bottom", pady=10)
-        canvas = FigureCanvasTkAgg(fig, master=pop)
-        canvas.draw(); canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-
+    # --- Integrated Loop ---
     def update_loop(self):
-        img_w, img_h = int(self.sw * 0.28), int(self.sh * 0.45)
-        clk_w, clk_h = int(self.sw * 0.60), int(self.sh * 0.35)
-        self.img_all = self.load_scale(self.path_allsky, img_w, img_h, "AllSky")
-        self.canvas.itemconfig(self.all_img_id, image=self.img_all)
-        self.img_rad = self.load_scale(self.path_radar, img_w, img_h, "Radar")
-        self.canvas.itemconfig(self.rad_img_id, image=self.img_rad)
-        self.img_clk = self.load_scale(self.path_clock, clk_w, clk_h, "ClearSky")
-        self.canvas.itemconfig(self.clk_img_id, image=self.img_clk)
+        now = datetime.now()
+        # Dusk Snapshot Trigger
+        if now.hour == 18 and now.minute == 0 and self.dusk_sent_today != now.date():
+            sensor_report = f"AI Matrix: {self.ai_sky_status}"
+            self.send_email_notification("Dusk Sensor Snapshot", 
+                f"Observatory status at 18:00:\n\n{sensor_report}")
+            self.dusk_sent_today = now.date()
+            
+        self.left_workspace.update()
+        w_half = int(self.left_workspace.winfo_width() / 2) - 10
+        h_main = int(self.left_workspace.winfo_height() * 0.5) - 10
+        w_full = int(self.left_workspace.winfo_width()) - 15
+        h_lower = int(self.left_workspace.winfo_height() * 0.35) - 10
+        
+        self.img_all = self.load_scale(self.path_allsky, w_half, h_main, "AllSky")
+        self.all_canvas.itemconfig(self.all_img_id, image=self.img_all)
+        self.img_rad = self.load_scale(self.path_radar, w_half, h_main, "Radar")
+        self.rad_canvas.itemconfig(self.rad_img_id, image=self.img_rad)
+        self.img_clk = self.load_scale(self.path_clock, w_full, h_lower, "ClearSky")
+        self.clk_canvas.itemconfig(self.clk_img_id, image=self.img_clk)
+        
         if os.path.exists(self.path_allsky):
             ts = os.path.getmtime(self.path_allsky)
-            if ts != self.last_allsky_ts: self.last_allsky_ts = ts; self.run_ai_clear_check()
+            if ts != self.last_allsky_ts:
+                self.last_allsky_ts = ts
+                self.run_ai_clear_check()
+                
         net_stat, net_col = self.get_connection_type()
-        self.canvas.itemconfig(self.net_status_text, text=f"NET: {net_stat}", fill=net_col)
+        self.net_lbl.config(text=f"NET: {net_stat}", fg=net_col)
         alpaca_on = self.check_alpaca_status()
-        self.canvas.itemconfig(self.val_alpaca, text="ONLINE" if alpaca_on else "OFFLINE", fill="#00FF00" if alpaca_on else "#FF3333")
+        self.right_panel.nametowidget(self.val_alpaca).config(text="ONLINE" if alpaca_on else "OFFLINE", fg="#00FF00" if alpaca_on else "#FF3333")
+        
         if os.path.exists(self.path_hours):
             try:
-                mtime = os.path.getmtime(self.path_hours)
-                diff = (datetime.now().timestamp() - mtime) / 60
-                self.canvas.itemconfig(self.sync_light, fill="#00FF00" if diff < 20 else "#FF0000")
                 with open(self.path_hours, "r") as f:
                     num_hrs = float(f.read().strip())
+                    if num_hrs >= 1000.0 and not self.maintenance_alerted:
+                        messagebox.showwarning("MAINTENANCE", f"Alert: {num_hrs:.1f} Hours reached. Please clean the dome.")
+                        self.maintenance_alerted = True
                     hrs_col = "red" if num_hrs >= 1000.0 else "#FFCC00"
-                    self.canvas.itemconfig(self.val_hrs, text=f"{num_hrs:.1f} HRS", fill=hrs_col)
+                    self.val_hrs.config(text=f"{num_hrs:.1f} HRS", fg=hrs_col)
             except: pass
+            
         if os.path.exists(self.path_sensors):
             try:
-                sky_t, amb_t, hum_val, wind_val, raw_p, is_wet = None, None, None, None, None, False
+                amb_t, hum_val, wind_val, raw_p = None, None, None, None
                 sensor_report = ""
                 with open(self.path_sensors, "r") as f:
                     for line in f:
                         u_line = line.upper().strip(); val = line.split(":", 1)[1].strip() if ":" in u_line else ""
                         sensor_report += f"{line.strip()}\n"
-                        if "SKY TEMP" in u_line:
-                            self.canvas.itemconfig(self.val_sky, text=val)
-                            try: sky_t = float(''.join(c for c in val if c in '0123456789.-'))
-                            except: pass
-                        elif "AMB TEMP" in u_line:
-                            self.canvas.itemconfig(self.val_amb, text=val)
+                        if "AMB TEMP" in u_line:
+                            self.right_panel.nametowidget(self.val_amb).config(text=val)
                             try: amb_t = float(''.join(c for c in val if c in '0123456789.-'))
                             except: pass
                         elif "HUMIDITY" in u_line:
                             try:
                                 clean_val = val.split('%')[0].strip()
                                 hum_val = float(''.join(c for c in clean_val if c in '0123456789.-'))
-                                self.canvas.itemconfig(self.val_hum, text=f"{hum_val}%")
+                                self.right_panel.nametowidget(self.val_hum).config(text=f"{hum_val}%")
                             except: pass
-                        elif "WIND" in u_line:
+                        elif "WIND SPD" in u_line:
                             try:
                                 wind_val = float(''.join(c for c in val if c in '0123456789.-'))
-                                self.canvas.itemconfig(self.val_wind, text=f"{wind_val} mph")
+                                self.right_panel.nametowidget(self.val_wind).config(text=f"{wind_val} mph")
                             except: pass
+                        elif "HEATER" in u_line:
+                            self.right_panel.nametowidget(self.val_heat).config(text=val)
                         elif "RAIN" in u_line or "PRECIP" in u_line:
-                            is_wet = "WET" in val.upper()
-                            self.canvas.itemconfig(self.val_rain, text="WET" if is_wet else "DRY", fill="red" if is_wet else "cyan")
+                            self.is_wet = "WET" in val.upper()
+                            self.right_panel.nametowidget(self.val_rain).config(text="WET" if self.is_wet else "DRY", fg="red" if self.is_wet else "cyan")
                         elif "PRESSURE" in u_line:
                             try:
                                 raw_p = float(''.join(c for c in val if c in '0123456789.-'))
-                                self.canvas.itemconfig(self.val_pres, text=f"{raw_p * 0.02953:.2f} in")
+                                self.right_panel.nametowidget(self.val_pres).config(text=f"{raw_p * 0.02953:.2f} in")
                             except: pass
-                        elif "HEATER" in u_line:
-                            h_on = "ON" in val.upper()
-                            self.canvas.itemconfig(self.val_heat, text=val, fill="#FF5733" if h_on else "cyan")
-                delta = (amb_t - sky_t) if (amb_t and sky_t) else 0
-                self.canvas.itemconfig(self.val_cloud, text="CLEAR" if delta > self.cloud_threshold else "CLOUDY", fill="lightgreen" if delta > self.cloud_threshold else "orange")
                 
                 current_time_ts = datetime.now().timestamp()
                 if (current_time_ts - self.last_log_time) >= 900: 
                     if all(v is not None for v in [amb_t, hum_val, wind_val, raw_p]):
-                        self.log_sensor_data(amb_t, hum_val, wind_val, raw_p * 0.02953, delta)
+                        self.log_sensor_data(amb_t, hum_val, wind_val, raw_p * 0.02953, 0.0)
                         self.last_log_time = current_time_ts
-
+                
                 dew_f = 0
                 if amb_t and hum_val:
-                    T = (amb_t - 32) * 5/9;
+                    T = (amb_t - 32) * 5/9
                     gamma = (math.log(hum_val/100) + ((17.27 * T) / (237.3 + T)))
                     dew_f = ((237.3 * gamma) / (17.27 - gamma) * 9/5) + 32
-                    self.canvas.itemconfig(self.val_dew, text=f"{dew_f:.1f} F")
+                    self.right_panel.nametowidget(self.val_dew).config(text=f"{dew_f:.1f} F")
+                
                 extreme_dew = (amb_t - dew_f) < 3 if (amb_t and dew_f) else False
-                wind_safe = (wind_val < 15) if (wind_val is not None) else False
-                if delta > self.cloud_threshold and not is_wet and wind_safe and not extreme_dew:
+                ai_safe = (self.ai_sky_status in ["CLEAR", "INITIALIZING"])
+                
+                if not self.is_wet and not self.is_obscured and (not wind_val or wind_val < 15) and not extreme_dew and ai_safe:
                     roof_text, roof_color = "SAFE TO OPEN", "lightgreen"
                 else:
                     reasons = []
-                    if is_wet: reasons.append("RAIN")
-                    if delta <= self.cloud_threshold: reasons.append("CLOUDY")
+                    if self.is_wet: reasons.append("RAIN")
+                    if self.is_obscured: reasons.append("OBSCURED")
                     if wind_val and wind_val >= 15: reasons.append("WIND")
                     if extreme_dew: reasons.append("DEW")
+                    if not ai_safe: reasons.append("CLOUDY")
                     roof_text, roof_color = (f"UNSAFE: {', '.join(reasons)}" if reasons else "UNSAFE"), "red"
-                self.canvas.itemconfig(self.val_dome, text=roof_text, fill=roof_color)
-                now = datetime.now()
-                if now.hour == 18 and now.minute == 0:
-                    if self.dusk_sent_today != now.day:
-                        self.send_email_notification("Dusk Sensor Snapshot", f"Observatory status at 18:00:\n\n{sensor_report}")
-                        self.dusk_sent_today = now.day
-                if is_wet or (wind_val and wind_val > 20):
+                self.right_panel.nametowidget(self.val_dome).config(text=roof_text, fg=roof_color)
+                
+                if self.is_wet or self.is_obscured or (wind_val and wind_val > 20) or (self.ai_sky_status == "CLOUDY"):
                     with open(self.path_roof_cmd, "w") as f: f.write("CLOSE")
                     if self.last_roof_safety_state == "SAFE TO OPEN" and not self.emergency_sent:
-                        reason = "RAIN" if is_wet else f"HIGH WIND ({wind_val} mph)"
-                        self.send_email_notification("EMERGENCY ROOF CLOSE", f"The roof was forced CLOSED due to detected {reason}.\n\n{sensor_report}")
+                        reason = "RAIN/OBSCURED" if (self.is_wet or self.is_obscured) else ("INCOMING CLOUD FRONT" if self.ai_sky_status == "CLOUDY" else f"HIGH WIND ({wind_val} mph)")
+                        self.send_email_notification("EMERGENCY ROOF CLOSE", f"Roof forced CLOSED: {reason}.\n\n{sensor_report}")
                         self.emergency_sent = True
                 else: self.emergency_sent = False
                 self.last_roof_safety_state = roof_text
             except: pass
+            
         self.root.after(1000, self.update_loop)
 
+    def create_ui_elements(self):
+        menu_frame = tk.Frame(self.root, bg="#0a0a0a", bd=2, relief="groove")
+        menu_frame.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=5, pady=5)
+        for col in range(9): menu_frame.grid_columnconfigure(col, weight=1)
+        menu_frame.grid_rowconfigure(0, weight=1)
+        
+        exit_min_frame = tk.Frame(menu_frame, bg="#0a0a0a")
+        exit_min_frame.grid(row=0, column=0, padx=4, pady=4, sticky="ew")
+        tk.Button(exit_min_frame, text="_", command=self.minimize_hud, bg="#333", fg="white", font=("Arial", 9, "bold"), width=3).pack(side="left", padx=1)
+        tk.Button(exit_min_frame, text="X", command=self.shutdown, bg="#500", fg="white", font=("Arial", 9, "bold"), width=3).pack(side="left", padx=1)
+        
+        self.btn_dew = tk.Button(menu_frame, text="DEW HTR: AUTO", command=self.toggle_dew, bg="#333", fg="white", font=("Arial", 9, "bold"))
+        self.btn_dew.grid(row=0, column=1, padx=4, pady=4, sticky="ew")
+
+        tk.Button(menu_frame, text="WEATHER HIST", command=self.show_weather_history, bg="#003366", fg="white", font=("Arial", 9, "bold")).grid(row=0, column=2, padx=4, pady=4, sticky="ew")
+        tk.Button(menu_frame, text="DOSSIER / MAINT", command=self.open_dossier, bg="#222", fg="white", font=("Arial", 9, "bold")).grid(row=0, column=3, padx=4, pady=4, sticky="ew")
+        self.power_btn = tk.Button(menu_frame, text="⚡ SEESTAR", command=self.trigger_fingerbot, bg="#900", fg="white", font=("Arial", 9, "bold"))
+        self.power_btn.grid(row=0, column=4, padx=4, pady=4, sticky="ew")
+        
+        self.btn_control = tk.Button(menu_frame, text="🔭 SEESTAR ALP", bg="#FFD700", fg="black", font=("Arial", 9, "bold"), command=self.open_seestar_alp)
+        self.btn_control.grid(row=0, column=5, padx=4, pady=4, sticky="ew")
+        
+        self.btn_health = tk.Button(menu_frame, text="🩺 HEALTH CHK", bg="#5D6D7E", fg="white", font=("Arial", 9, "bold"), command=self.run_health_check)
+        self.btn_health.grid(row=0, column=6, padx=4, pady=4, sticky="ew")
+        self.net_lbl = tk.Label(menu_frame, text="NET: CHECKING...", font=("Arial", 9, "bold"), bg="#0a0a0a", fg="cyan")
+        self.net_lbl.grid(row=0, column=7, padx=4, pady=4, sticky="w")
+        
+        self.left_workspace = tk.Frame(self.root, bg="black")
+        self.left_workspace.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
+        self.left_workspace.grid_rowconfigure(0, weight=1)
+        self.left_workspace.grid_rowconfigure(1, weight=6)
+        self.left_workspace.grid_rowconfigure(2, weight=4)
+        self.left_workspace.grid_columnconfigure(0, weight=1)
+        self.left_workspace.grid_columnconfigure(1, weight=1)
+        
+        roof_btn_frame = tk.Frame(self.left_workspace, bg="black")
+        roof_btn_frame.grid(row=0, column=0, columnspan=2, pady=5, sticky="ew")
+        roof_btn_frame.grid_columnconfigure((0,1,2), weight=1)
+        
+        self.btn_open = tk.Button(roof_btn_frame, text="OPEN ROOF", bg="#1E8449", fg="white", font=("Arial", 9, "bold"), command=self.manual_open)
+        self.btn_open.grid(row=0, column=0, padx=10, sticky="ew")
+        self.btn_ai = tk.Button(roof_btn_frame, text="AI MOVEMENT CHECK", bg="#6C3483", fg="white", font=("Arial", 9, "bold"), command=lambda: self.run_ai_clear_check(manual_click=True))
+        self.btn_ai.grid(row=0, column=1, padx=10, sticky="ew")
+        self.btn_close = tk.Button(roof_btn_frame, text="CLOSE ROOF", bg="#922B21", fg="white", font=("Arial", 9, "bold"), command=self.manual_close)
+        self.btn_close.grid(row=0, column=2, padx=10, sticky="ew")
+        
+        self.all_canvas = tk.Canvas(self.left_workspace, bg="#050505", highlightthickness=1, highlightbackground="#222")
+        self.all_canvas.grid(row=1, column=0, padx=4, pady=4, sticky="nsew")
+        self.all_img_id = self.all_canvas.create_image(0, 0, anchor='nw')
+        self.all_canvas.tag_bind(self.all_img_id, "<Button-1>", lambda e: self.popout(self.path_allsky))
+        
+        self.rad_canvas = tk.Canvas(self.left_workspace, bg="#050505", highlightthickness=1, highlightbackground="#222")
+        self.rad_canvas.grid(row=1, column=1, padx=4, pady=4, sticky="nsew")
+        self.rad_img_id = self.rad_canvas.create_image(0, 0, anchor='nw')
+        self.rad_canvas.tag_bind(self.rad_img_id, "<Button-1>", lambda e: self.popout(self.path_radar))
+        
+        self.clk_canvas = tk.Canvas(self.left_workspace, bg="#050505", highlightthickness=1, highlightbackground="#222")
+        self.clk_canvas.grid(row=2, column=0, columnspan=2, padx=4, pady=4, sticky="nsew")
+        self.clk_img_id = self.clk_canvas.create_image(0, 0, anchor='nw')
+        self.clk_canvas.tag_bind(self.clk_img_id, "<Button-1>", lambda e: self.popout(self.path_clock))
+        
+        self.right_panel = tk.Frame(self.root, bg="#050505", bd=3, relief="ridge", highlightthickness=1, highlightbackground="#00FFCC")
+        self.right_panel.grid(row=1, column=1, sticky="nsew", padx=10, pady=10)
+        for r in range(12): self.right_panel.grid_rowconfigure(r, weight=1)
+        self.right_panel.grid_columnconfigure(0, weight=1)
+        self.right_panel.grid_columnconfigure(1, weight=3)
+        self.right_panel.grid_columnconfigure(2, weight=3)
+        
+        tk.Label(self.right_panel, text="TELEMETRY", bg="#050505", fg="#00FFCC", font=("Arial", 12, "bold")).grid(row=0, column=0, columnspan=3, pady=5)
+        
+        self.val_amb = self.build_telemetry_row("🌡️", "AMB TEMP:", "#EC7063", 1)
+        self.val_hum = self.build_telemetry_row("💧", "HUMIDITY:", "#5499C7", 2)
+        self.val_dew = self.build_telemetry_row("✨", "DEW POINT:", "#A569BD", 3)
+        self.val_heat = self.build_telemetry_row("🔥", "DEW HEAT:", "#FF5733", 4)
+        self.val_pres = self.build_telemetry_row("⏲️", "PRESSURE:", "#58D68D", 5)
+        self.val_wind = self.build_telemetry_row("💨", "WIND SPD:", "#F4D03F", 6)
+        self.val_dir  = self.build_telemetry_row("🧭", "WIND DIR:", "#3498DB", 7)
+        self.val_rain = self.build_telemetry_row("☔", "RAIN DET:", "#AF7AC5", 8)
+        self.val_dome = self.build_telemetry_row("🏠", "ROOF STAT:", "#EB984E", 9)
+        self.val_alpaca = self.build_telemetry_row("🔭", "ALPACA LINK:", "#00FF00", 10)
+        
+        timer_frame = tk.Frame(self.right_panel, bg="#050505")
+        timer_frame.grid(row=11, column=0, columnspan=3, sticky="nsew", padx=5)
+        timer_frame.grid_columnconfigure(1, weight=1)
+        self.sync_canvas = tk.Canvas(timer_frame, width=16, height=16, bg="#050505", highlightthickness=0)
+        self.sync_canvas.pack(side="left", padx=5)
+        self.sync_light = self.sync_canvas.create_oval(2, 2, 14, 14, fill="gray", outline="white")
+        tk.Label(timer_frame, text="OP HOURS:", bg="#050505", fg="white", font=("Arial", 10, "bold")).pack(side="left")
+        self.val_hrs = tk.Label(timer_frame, text="--", bg="#050505", fg="cyan", font=("Courier", 12, "bold"))
+        self.val_hrs.pack(side="right", padx=10)
+
+        self.preview_frame = tk.Frame(self.root, bg="black")
+        self.preview_frame.grid(row=2, column=1, sticky="nsew", padx=5, pady=5)
+
+    def build_telemetry_row(self, icon, label, color, row_idx):
+        tk.Label(self.right_panel, text=icon, bg="#050505", fg=color, font=("Arial", 14), anchor="w").grid(row=row_idx, column=0, padx=5, sticky="w")
+        tk.Label(self.right_panel, text=label, bg="#050505", fg="white", font=("Arial", 10, "bold"), anchor="w").grid(row=row_idx, column=1, sticky="w")
+        lbl_val = tk.Label(self.right_panel, text="--", bg="#050505", fg="cyan", font=("Courier", 12, "bold"), anchor="e")
+        lbl_val.grid(row=row_idx, column=2, padx=10, sticky="e")
+        return lbl_val
+
+    def popout(self, path):
+        if not os.path.exists(path): return
+        pop = tk.Toplevel(self.root)
+        pop.attributes("-fullscreen", True, "-topmost", True)
+        pop.config(bg='black')
+        img = Image.open(path)
+        if "latest.jpg" in path.lower(): img.thumbnail((int(self.sw * 0.95), int(self.sh * 0.95)), Image.Resampling.LANCZOS)
+        elif "radar" in path.lower() or "motion_debug" in path.lower():
+            new_h = int(self.sh * 0.88); ratio = new_h / float(img.size[1]);
+            new_w = int(float(img.size[0]) * ratio)
+            img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        else: img.thumbnail((int(self.sw * 0.8), int(self.sh * 0.8)), Image.Resampling.LANCZOS)
+        self.p_img = ImageTk.PhotoImage(img)
+        tk.Button(pop, image=self.p_img, bg='black', bd=0, activebackground='black', command=pop.destroy).pack(expand=True)
+
 if __name__ == "__main__":
-    root = tk.Tk(); app = SumnerHUD(root); root.mainloop()
+    root = tk.Tk()
+    app = SumnerHUD(root)
+    root.mainloop()
