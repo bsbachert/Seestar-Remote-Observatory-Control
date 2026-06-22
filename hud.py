@@ -180,8 +180,31 @@ class SumnerHUD:
         current_img = cv2.imread(self.path_allsky)
         gray_curr = cv2.cvtColor(current_img, cv2.COLOR_BGR2GRAY)
         
+        # --- NEW: MLX90614 FOV Simulation Mask with Offsets ---
+        h, w = gray_curr.shape
+        
+        # OFFSETS: Adjust these to shift the mask away from trees/walls
+        # Positive X moves right, Negative X moves left
+        # Positive Y moves down, Negative Y moves up
+        offset_x = 120  # Shifted right to avoid left-side trees
+        offset_y = 0    # Keep vertically centered for now
+        
+        center = ((w // 2) + offset_x, (h // 2) + offset_y)
+        
+        # Shrunk radius slightly to 35% so it fits better when shifted off-center
+        radius = int(min(h, w) * 0.35) 
+        
+        # Create a solid black mask and draw a white circle in the middle
+        mask = np.zeros_like(gray_curr)
+        cv2.circle(mask, center, radius, 255, -1)
+        
+        # Apply the mask (blacks out everything outside the circle)
+        masked_gray = cv2.bitwise_and(gray_curr, mask)
+        # -----------------------------------------
+        
         # 1. DOME OBSTRUCTION CHECK (Safety First)
-        variance = cv2.Laplacian(gray_curr, cv2.CV_64F).var()
+        laplacian = cv2.Laplacian(gray_curr, cv2.CV_64F)
+        variance = laplacian[mask == 255].var() if np.any(mask) else 0
         is_obscured = (variance < 25.0)
         
         # 2. TIME-BASED FOLDER SELECTION
@@ -194,18 +217,21 @@ class SumnerHUD:
         # 3. TEMPLATE MATCHING
         best_match = "UNCERTAIN"
         highest_score = -1.0
-        gray_curr_blurred = cv2.GaussianBlur(gray_curr, (5, 5), 0)
+        masked_gray_blurred = cv2.GaussianBlur(masked_gray, (5, 5), 0)
         
         if os.path.exists(ref_folder):
             for ref_file in os.listdir(ref_folder):
                 if not ref_file.endswith(".jpg"): continue
                 ref_img = cv2.imread(os.path.join(ref_folder, ref_file), cv2.IMREAD_GRAYSCALE)
-                ref_img = cv2.resize(ref_img, (gray_curr_blurred.shape[1], gray_curr_blurred.shape[0]))
                 
-                score = cv2.matchTemplate(gray_curr_blurred, ref_img, cv2.TM_CCOEFF_NORMED)[0][0]
-                if score > highest_score:
-                    highest_score = score
-                    best_match = ref_file.replace(".jpg", "").replace("_", " ")
+                if ref_img is not None:
+                    ref_img = cv2.resize(ref_img, (masked_gray_blurred.shape[1], masked_gray_blurred.shape[0]))
+                    ref_img_masked = cv2.bitwise_and(ref_img, mask)
+                    
+                    score = cv2.matchTemplate(masked_gray_blurred, ref_img_masked, cv2.TM_CCOEFF_NORMED)[0][0]
+                    if score > highest_score:
+                        highest_score = score
+                        best_match = ref_file.replace(".jpg", "").replace("_", " ")
 
         # 4. CONSOLIDATED STATUS
         if is_obscured:
@@ -221,6 +247,30 @@ class SumnerHUD:
         if self.btn_dew and "AUTO" in self.btn_dew.cget("text"):
             with open(self.path_dew_cmd, "w") as f:
                 f.write("ON" if is_obscured else "OFF")
+
+        # 5. MANUAL CLICK DEBUG IMAGE
+        if manual_click:
+            debug_img = current_img.copy()
+            
+            # Visual feedback: Draw the FOV boundary
+            cv2.circle(debug_img, center, radius, (0, 255, 255), 2)
+            
+            # Darken everything outside the mask for the user preview
+            mask_3c = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+            darkened = cv2.addWeighted(debug_img, 0.3, np.zeros_like(debug_img), 0.7, 0)
+            debug_img = np.where(mask_3c == 255, debug_img, darkened)
+
+            txt_color = (0, 255, 0) if color == "#1E8449" else (0, 165, 255)
+            if is_obscured: txt_color = (0, 0, 255)
+
+            cv2.putText(debug_img, f"STATUS: {self.ai_sky_status}", (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.5, txt_color, 3)
+            cv2.putText(debug_img, f"MATCH: {best_match} ({highest_score:.2f})", (30, 120), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            cv2.putText(debug_img, f"VARIANCE: {variance:.1f}", (30, 170), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            cv2.putText(debug_img, f"MASK OFFSETS: X:{offset_x} Y:{offset_y}", (30, 220), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            
+            debug_path = "/tmp/motion_debug.jpg"
+            cv2.imwrite(debug_path, debug_img)
+            self.popout(debug_path)
 
     def manual_open(self):
         with open(self.path_roof_cmd, "w") as f: f.write("OPEN")
