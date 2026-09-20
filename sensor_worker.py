@@ -76,7 +76,7 @@ while True:
             T = (amb_f - 32) * 5/9
             gamma = (math.log(hum_val/100) + ((17.27 * T) / (237.3 + T)))
             dew_f = ((237.3 * gamma) / (17.27 - gamma) * 9/5) + 32
-            if (amb_f - dew_f) <= 5.0:
+            if (amb_f - dew_f) <= 15.0:
                 GPIO.output(DEW_HEATER_PIN, GPIO.HIGH)
                 heater_status = "ON (DEW RISK)"
             else:

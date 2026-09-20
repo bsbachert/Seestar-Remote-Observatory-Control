@@ -1,3 +1,4 @@
+#name=hud_2.py
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
 from PIL import Image, ImageTk, ImageDraw
@@ -13,12 +14,64 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import shutil
+import asyncio
+import threading
 
 try:
     lock_file = open('/tmp/sumner_hud.lock', 'w')
     fcntl.lockf(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
 except:
     sys.exit(0)
+
+# --- Focus Drift Tracker Class ---
+class FocusTracker:
+    def __init__(self, root_window):
+        self.root = root_window
+        self.baseline_temp_f = None
+        self.alert_active = False
+
+    def check_focus_drift(self, current_temp_f):
+        if self.baseline_temp_f is None:
+            self.baseline_temp_f = current_temp_f
+            return 0.0 
+
+        drift_f = abs(current_temp_f - self.baseline_temp_f)
+
+        if drift_f >= 2.7 and not self.alert_active:
+            self.trigger_popup(current_temp_f, drift_f)
+
+        return drift_f
+
+    def trigger_popup(self, current_temp_f, drift_f):
+        self.alert_active = True
+        
+        alert_win = tk.Toplevel(self.root)
+        alert_win.title("🔭 Refocus Required")
+        alert_win.geometry("350x180")
+        alert_win.attributes("-topmost", True) 
+        alert_win.configure(bg="#8b0000")      
+        
+        msg = tk.Label(
+            alert_win, 
+            text=f"Temperature shifted by {drift_f:.1f}°F (1.5°C).\n\nRun autofocus routine now.",
+            font=("Arial", 12, "bold"),
+            bg="#8b0000",
+            fg="white"
+        )
+        msg.pack(expand=True, pady=10)
+        
+        def acknowledge_and_reset():
+            self.baseline_temp_f = current_temp_f
+            self.alert_active = False
+            alert_win.destroy()
+            
+        btn = tk.Button(
+            alert_win, 
+            text="Acknowledge & Reset Baseline", 
+            command=acknowledge_and_reset,
+            font=("Arial", 10, "bold")
+        )
+        btn.pack(pady=10)
 
 class SumnerHUD:
     def __init__(self, root):
@@ -29,6 +82,9 @@ class SumnerHUD:
 
         self.sw = self.root.winfo_screenwidth()
         self.sh = self.root.winfo_screenheight()
+
+        # Instantiate the Focus Tracker
+        self.focus_monitor = FocusTracker(self.root)
 
         # Existing Configuration
         self.email_sender = "bsbachert@gmail.com"
@@ -66,6 +122,7 @@ class SumnerHUD:
         self.img_clk = None
         self.seestar_ip = "0.0.0.0"
         self.last_allsky_ts = 0
+        self.last_ai_check = 0 
         self.last_log_time = 0 
         self.last_roof_safety_state = None
         self.emergency_sent = False
@@ -75,11 +132,11 @@ class SumnerHUD:
         self.is_obscured = False
         self.maintenance_alerted = False
 
-        self.cloud_motion_threshold = 8.0
+        self.ai_radius_pct = 35.0
         if os.path.exists(self.path_thresh):
             try:
                 with open(self.path_thresh, "r") as f:
-                    self.cloud_motion_threshold = float(f.read().strip())
+                    self.ai_radius_pct = float(f.read().strip())
             except: pass
 
         if os.path.exists(self.path_seestar_ip):
@@ -88,7 +145,6 @@ class SumnerHUD:
                     self.seestar_ip = f.read().strip()
             except: pass
 
-        # UI Layout setup
         self.root.grid_rowconfigure(0, weight=1)
         self.root.grid_rowconfigure(1, weight=10)
         self.root.grid_rowconfigure(2, weight=3)
@@ -106,7 +162,63 @@ class SumnerHUD:
         self.fetch_radar_auto()
         self.update_loop()
 
-    # --- Location Helper ---
+    def trigger_fingerbot(self):
+        pop = tk.Toplevel(self.root)
+        pop.title("Fingerbot Terminal")
+        pop.geometry("400x300")
+        pop.config(bg="black")
+        
+        term = scrolledtext.ScrolledText(pop, bg="black", fg="#00FF00", font=("Courier", 10))
+        term.pack(expand=True, fill="both")
+        term.insert(tk.END, "Initializing Bluetooth Sequence...\n")
+        
+        threading.Thread(target=self._run_bleak_task, args=(term, pop), daemon=True).start()
+
+    def _run_bleak_task(self, term_widget, pop_window):
+        from bleak import BleakClient
+        mac = "E1:6A:83:06:38:48"
+        uuid = "cba20002-224d-11e6-9fb8-0002a5d5c51b"
+        cmd = bytearray([0x57, 0x01, 0x01])
+
+        async def run():
+            try:
+                term_widget.insert(tk.END, f"Connecting to {mac}...\n")
+                async with BleakClient(mac, timeout=10.0) as client:
+                    term_widget.insert(tk.END, "Connected! Sending Command...\n")
+                    await client.write_gatt_char(uuid, cmd, response=True)
+                    term_widget.insert(tk.END, "Success: Command Sent.\n")
+                    time.sleep(1)
+                    pop_window.destroy()
+            except Exception as e:
+                term_widget.insert(tk.END, f"\nERROR: {str(e)}\n")
+                term_widget.insert(tk.END, "Closing in 3 seconds...")
+                time.sleep(3)
+                pop_window.destroy()
+
+        asyncio.run(run())
+
+    def open_stellarmate(self):
+        self.root.attributes("-topmost", False)
+        target_url = "http://stellarmate.local"
+        try:
+            subprocess.Popen(["chromium-browser", f"--app={target_url}"])
+        except Exception:
+            webbrowser.open(target_url)
+
+    def open_seestar_cam(self):
+        pop = tk.Toplevel(self.root)
+        pop.title("Seestar Monitor Camera")
+        pop.geometry(f"{int(self.sw * 0.45)}x{int(self.sh * 0.5)}")
+        pop.config(bg='black')
+        pop.attributes("-topmost", True)
+        
+        tk.Label(pop, text="SEESTAR MONITOR (Awaiting ESP32-CAM Stream)", bg="black", fg="#D35400", font=("Arial", 12, "bold")).pack(pady=10)
+        
+        cam_view_lbl = tk.Label(pop, text="Stream URL not configured yet\n(Will bind to http://<esp32-ip>/stream)", bg="#111", fg="white", font=("Courier", 10))
+        cam_view_lbl.pack(expand=True, fill="both", padx=15, pady=15)
+        
+        tk.Button(pop, text="CLOSE", command=pop.destroy, bg="#500", fg="white", font=("Arial", 9, "bold")).pack(side="bottom", pady=10)
+
     def get_radar_coords(self):
         try:
             with open(self.path_radar_id, 'r') as file:
@@ -121,7 +233,6 @@ class SumnerHUD:
         }
         return radar_map.get(station_id, radar_map["GRR"])
 
-    # --- Existing Helper Methods ---
     def minimize_hud(self):
         self.root.attributes("-topmost", False)
         self.root.iconify()
@@ -153,9 +264,9 @@ class SumnerHUD:
             server.quit()
         except Exception as e: print(f"Email Error: {e}")
 
-    def log_sensor_data(self, amb, hum, wind, pres, sky_diff):
+    def log_sensor_data(self, amb, hum, wind, pres, drift):
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        log_entry = f"{now_str} | Amb:{amb:.1f} | Hum:{hum:.0f} | Wind:{wind:.1f} | Pres:{pres:.2f} | SkyDiff:{sky_diff:.1f}\n"
+        log_entry = f"{now_str} | Amb:{amb:.1f} | Hum:{hum:.0f} | Wind:{wind:.1f} | Pres:{pres:.2f} | Drift:{drift:.1f}\n"
         try:
             with open(self.path_sensors_log, "a") as f: f.write(log_entry)
         except Exception as e: print(f"Logging Error: {e}")
@@ -180,41 +291,28 @@ class SumnerHUD:
         current_img = cv2.imread(self.path_allsky)
         gray_curr = cv2.cvtColor(current_img, cv2.COLOR_BGR2GRAY)
         
-        # --- NEW: MLX90614 FOV Simulation Mask with Offsets ---
         h, w = gray_curr.shape
-        
-        # OFFSETS: Adjust these to shift the mask away from trees/walls
-        # Positive X moves right, Negative X moves left
-        # Positive Y moves down, Negative Y moves up
-        offset_x = 120  # Shifted right to avoid left-side trees
-        offset_y = 0    # Keep vertically centered for now
-        
+        offset_x = 120
+        offset_y = 0
         center = ((w // 2) + offset_x, (h // 2) + offset_y)
         
-        # Shrunk radius slightly to 35% so it fits better when shifted off-center
-        radius = int(min(h, w) * 0.35) 
+        radius = int(min(h, w) * (self.ai_radius_pct / 100.0)) 
         
-        # Create a solid black mask and draw a white circle in the middle
         mask = np.zeros_like(gray_curr)
         cv2.circle(mask, center, radius, 255, -1)
-        
-        # Apply the mask (blacks out everything outside the circle)
         masked_gray = cv2.bitwise_and(gray_curr, mask)
-        # -----------------------------------------
         
-        # 1. DOME OBSTRUCTION CHECK (Safety First)
         laplacian = cv2.Laplacian(gray_curr, cv2.CV_64F)
         variance = laplacian[mask == 255].var() if np.any(mask) else 0
-        is_obscured = (variance < 25.0)
         
-        # 2. TIME-BASED FOLDER SELECTION
+        is_obscured = (variance < 2.0)
+        
         hour = datetime.now().hour
         if 6 <= hour < 17: folder = "day"
         elif 17 <= hour < 20: folder = "evening"
         else: folder = "night"
         ref_folder = f"/home/pi/allsky_guard/ref/{folder}/"
         
-        # 3. TEMPLATE MATCHING
         best_match = "UNCERTAIN"
         highest_score = -1.0
         masked_gray_blurred = cv2.GaussianBlur(masked_gray, (5, 5), 0)
@@ -233,7 +331,6 @@ class SumnerHUD:
                         highest_score = score
                         best_match = ref_file.replace(".jpg", "").replace("_", " ")
 
-        # 4. CONSOLIDATED STATUS
         if is_obscured:
             self.ai_sky_status = "OBSCURED"
             status, color = "AI: DOME OBSCURED", "#922B21"
@@ -248,26 +345,15 @@ class SumnerHUD:
             with open(self.path_dew_cmd, "w") as f:
                 f.write("ON" if is_obscured else "OFF")
 
-        # 5. MANUAL CLICK DEBUG IMAGE
         if manual_click:
             debug_img = current_img.copy()
-            
-            # Visual feedback: Draw the FOV boundary
             cv2.circle(debug_img, center, radius, (0, 255, 255), 2)
-            
-            # Darken everything outside the mask for the user preview
             mask_3c = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
             darkened = cv2.addWeighted(debug_img, 0.3, np.zeros_like(debug_img), 0.7, 0)
             debug_img = np.where(mask_3c == 255, debug_img, darkened)
-
             txt_color = (0, 255, 0) if color == "#1E8449" else (0, 165, 255)
             if is_obscured: txt_color = (0, 0, 255)
-
             cv2.putText(debug_img, f"STATUS: {self.ai_sky_status}", (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.5, txt_color, 3)
-            cv2.putText(debug_img, f"MATCH: {best_match} ({highest_score:.2f})", (30, 120), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-            cv2.putText(debug_img, f"VARIANCE: {variance:.1f}", (30, 170), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-            cv2.putText(debug_img, f"MASK OFFSETS: X:{offset_x} Y:{offset_y}", (30, 220), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-            
             debug_path = "/tmp/motion_debug.jpg"
             cv2.imwrite(debug_path, debug_img)
             self.popout(debug_path)
@@ -279,35 +365,6 @@ class SumnerHUD:
     def manual_close(self):
         with open(self.path_roof_cmd, "w") as f: f.write("CLOSE")
         messagebox.showinfo("ROOF", "Manual CLOSE command sent.")
-
-    def trigger_fingerbot(self):
-        try:
-            subprocess.Popen(["python3", "/home/pi/allsky_guard/seestar_push.py"])
-            self.power_btn.config(bg="red", text="⚡ SENDING...")
-            self.root.after(2000, lambda: self.power_btn.config(bg="#900", text="⚡ SEESTAR"))
-        except: messagebox.showerror("ERROR", "Could not run seestar_push.py")
-
-    def open_seestar_alp(self):
-        # Drop topmost so the browser isn't trapped behind the fullscreen HUD
-        self.root.attributes("-topmost", False)
-        target_url = "http://localhost:5432/"
-        try:
-            # Try to launch chromium in a clean app window
-            subprocess.Popen(["chromium-browser", f"--app={target_url}"])
-        except Exception:
-            # Fallback to default browser
-            webbrowser.open(target_url)
-
-    def run_health_check(self):
-        report = []
-        if os.path.exists(self.path_sensors):
-            mtime = os.path.getmtime(self.path_sensors)
-            report.append("✅ SENSORS: Active" if (datetime.now().timestamp() - mtime) < 30 else "❌ SENSORS: Stale")
-        try:
-            bt_check = subprocess.check_output(["bluetoothctl", "devices"], text=True)
-            report.append("✅ BLUETOOTH: Bot paired" if "E1:6A:83:06:38:48" in bt_check else "⚠️ BLUETOOTH: Bot missing")
-        except: report.append("❌ BLUETOOTH: Error")
-        messagebox.showinfo("SYSTEM HEALTH REPORT", "\n".join(report))
 
     def get_connection_type(self):
         try:
@@ -357,7 +414,8 @@ class SumnerHUD:
         pop = tk.Toplevel(self.root)
         pop.attributes("-fullscreen", True, "-topmost", True)
         pop.config(bg='black')
-        times, temps, hums, winds, press, sky_diff = [], [], [], [], [], []
+        
+        times, temps, hums, winds, press, focus_drift = [], [], [], [], [], []
         cutoff = datetime.now() - timedelta(hours=24)
         try:
             with open(self.path_sensors_log, "r") as f:
@@ -371,11 +429,14 @@ class SumnerHUD:
                         hums.append(float(parts[2].split(':')[1]))
                         winds.append(float(parts[3].split(':')[1]))
                         press.append(float(parts[4].split(':')[1]))
-                        if len(parts) > 5: sky_diff.append(float(parts[5].split(':')[1]))
+                        if len(parts) > 5: focus_drift.append(float(parts[5].split(':')[1]))
         except Exception as e: print(f"Log Parse Error: {e}")
+        
         fig, axs = plt.subplots(5, 1, figsize=(10, 12), dpi=100, sharex=True)
         fig.set_facecolor('black')
-        sets = [(temps, "TEMP (F)", "#EC7063"), (hums, "HUM (%)", "#5499C7"), (winds, "WIND (MPH)", "#F4D03F"), (press, "BARO (IN)", "#58D68D"), (sky_diff, "MOTION Δ", "#AAB7B8")]
+        
+        sets = [(temps, "TEMP (F)", "#EC7063"), (hums, "HUM (%)", "#5499C7"), (winds, "WIND (MPH)", "#F4D03F"), (press, "BARO (IN)", "#58D68D"), (focus_drift, "FOCUS DRIFT", "#AAB7B8")]
+        
         for i, (data, label, color) in enumerate(sets):
             if data: axs[i].plot(times, data, color=color, linewidth=1.5)
             axs[i].set_ylabel(label, color='white', fontsize=8)
@@ -386,6 +447,7 @@ class SumnerHUD:
             axs[i].grid(color='#333', linestyle='--')
             for s in axs[i].spines.values(): s.set_color('#444')
         plt.xticks(rotation=45)
+        
         tk.Button(pop, text="CLOSE", command=pop.destroy, bg="#500", fg="white", font=("Arial", 10, "bold")).pack(side="bottom", pady=10)
         canvas = FigureCanvasTkAgg(fig, master=pop)
         canvas.draw(); canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
@@ -404,30 +466,17 @@ class SumnerHUD:
             self.right_panel.nametowidget(self.val_dir).config(text="API ERROR")
         self.root.after(900000, self.fetch_online_wind_dir)
 
-    # --- NEW: Wind Direction Utility ---
     def get_wind_direction(self, degrees):
-        """Converts numerical degrees into 8-sector cardinal directions."""
         deg = float(degrees) % 360
         sectors = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
-        # Shift by 22.5 to ensure N is centered at 0/360
         index = int(((deg + 22.5) % 360) / 45)
         return sectors[index]
 
-    def update_hud(self, wind_data):
-        # ... logic to get degree from your sensor ...
-        direction_label = self.get_wind_direction(wind_data['degrees'])
-        
-        # Update the UI display
-        self.lbl_wind.config(text=f"WIND: {direction_label}")
-
     def fetch_radar_auto(self):
-        """Silently runs get_radar.py in the background every 10 minutes."""
         try:
             subprocess.Popen(["python3", self.path_sync_script])
         except Exception as e:
             print(f"Radar sync error: {e}")
-            
-        # 600000 ms = 10 minutes. Adjust if you want it faster or slower.
         self.root.after(600000, self.fetch_radar_auto)
 
     def open_dossier(self):
@@ -463,10 +512,10 @@ class SumnerHUD:
             with open(self.path_fingerbot_mac, "w") as f: f.write(bt_entry.get().strip())
             with open(self.path_email, "w") as f: f.write(mail_entry.get().strip())
             with open(self.path_notes, 'w') as f: f.write(txt.get('1.0', 'end'))
-            with open(self.path_thresh, 'w') as f: f.write(str(motion_slider.get()))
+            with open(self.path_thresh, 'w') as f: f.write(str(radius_slider.get()))
             self.seestar_ip = ip_entry.get().strip()
             self.email_receiver = mail_entry.get().strip()
-            self.cloud_motion_threshold = motion_slider.get()
+            self.ai_radius_pct = radius_slider.get()
             d_win.destroy()
         def reset_hrs():
             if messagebox.askyesno("RESET", "Reset Timer to 0?"):
@@ -478,20 +527,18 @@ class SumnerHUD:
         tk.Button(btn_f, text="🔄 SYNC RADAR", bg="#4B0082", fg="white", command=lambda: subprocess.Popen(["python3", self.path_sync_script])).pack(side="left", padx=5)
         tk.Button(btn_f, text="🤖 TEST BOT", bg="orange", command=self.trigger_fingerbot).pack(side="left", padx=5)
         
-        tk.Label(btn_f, text="MOTION %:", bg="#050505", fg="white", font=("Arial", 8)).pack(side="left", padx=(10, 2))
-        motion_slider = tk.Scale(btn_f, from_=1.0, to=30.0, resolution=0.5, orient='horizontal', bg='#050505', fg='white', troughcolor='#333', length=100, highlightthickness=0, font=("Arial", 7))
-        motion_slider.set(self.cloud_motion_threshold)
-        motion_slider.pack(side="left", padx=5)
+        tk.Label(btn_f, text="AI RADIUS %:", bg="#050505", fg="white", font=("Arial", 8)).pack(side="left", padx=(10, 2))
+        radius_slider = tk.Scale(btn_f, from_=10.0, to=100.0, resolution=1.0, orient='horizontal', bg='#050505', fg='white', troughcolor='#333', length=100, highlightthickness=0, font=("Arial", 7))
+        radius_slider.set(self.ai_radius_pct)
+        radius_slider.pack(side="left", padx=5)
+        
         tk.Button(btn_f, text="💾 SAVE", bg="#1E8449", fg="white", command=save_all).pack(side="right", padx=20)
 
-    # --- Integrated Loop ---
     def update_loop(self):
         now = datetime.now()
-        # Dusk Snapshot Trigger
         if now.hour == 18 and now.minute == 0 and self.dusk_sent_today != now.date():
             sensor_report = f"AI Matrix: {self.ai_sky_status}"
-            self.send_email_notification("Dusk Sensor Snapshot", 
-                f"Observatory status at 18:00:\n\n{sensor_report}")
+            self.send_email_notification("Dusk Sensor Snapshot", f"Observatory status at 18:00:\n\n{sensor_report}")
             self.dusk_sent_today = now.date()
             
         self.left_workspace.update()
@@ -507,10 +554,12 @@ class SumnerHUD:
         self.img_clk = self.load_scale(self.path_clock, w_full, h_lower, "ClearSky")
         self.clk_canvas.itemconfig(self.clk_img_id, image=self.img_clk)
         
+        current_time_ms = int(time.time() * 1000)
         if os.path.exists(self.path_allsky):
             ts = os.path.getmtime(self.path_allsky)
-            if ts != self.last_allsky_ts:
+            if ts != self.last_allsky_ts and (current_time_ms - self.last_ai_check) >= 300000:
                 self.last_allsky_ts = ts
+                self.last_ai_check = current_time_ms
                 self.run_ai_clear_check()
                 
         net_stat, net_col = self.get_connection_type()
@@ -562,11 +611,17 @@ class SumnerHUD:
                                 raw_p = float(''.join(c for c in val if c in '0123456789.-'))
                                 self.right_panel.nametowidget(self.val_pres).config(text=f"{raw_p * 0.02953:.2f} in")
                             except: pass
+
+                # --- FOCUS DRIFT INTEGRATION ---
+                current_drift = 0.0
+                if amb_t is not None:
+                    current_drift = self.focus_monitor.check_focus_drift(amb_t)
+                    self.right_panel.nametowidget(self.val_drift).config(text=f"{current_drift:.1f} F")
                 
                 current_time_ts = datetime.now().timestamp()
                 if (current_time_ts - self.last_log_time) >= 900: 
                     if all(v is not None for v in [amb_t, hum_val, wind_val, raw_p]):
-                        self.log_sensor_data(amb_t, hum_val, wind_val, raw_p * 0.02953, 0.0)
+                        self.log_sensor_data(amb_t, hum_val, wind_val, raw_p * 0.02953, current_drift)
                         self.last_log_time = current_time_ts
                 
                 dew_f = 0
@@ -576,11 +631,11 @@ class SumnerHUD:
                     dew_f = ((237.3 * gamma) / (17.27 - gamma) * 9/5) + 32
                     self.right_panel.nametowidget(self.val_dew).config(text=f"{dew_f:.1f} F")
                 
-                extreme_dew = (amb_t - dew_f) < 3 if (amb_t and dew_f) else False
-                ai_safe = (self.ai_sky_status in ["CLEAR", "INITIALIZING"])
+                extreme_dew = (amb_t - dew_f) < 5 if (amb_t and dew_f) else False
+                ai_safe = ("CLEAR" in self.ai_sky_status or "INITIALIZING" in self.ai_sky_status)
                 
                 if not self.is_wet and not self.is_obscured and (not wind_val or wind_val < 15) and not extreme_dew and ai_safe:
-                    roof_text, roof_color = "SAFE TO OPEN", "lightgreen"
+                    roof_text, roof_color = "CLEAR-SAFE TO OPEN", "lightgreen"
                 else:
                     reasons = []
                     if self.is_wet: reasons.append("RAIN")
@@ -606,7 +661,7 @@ class SumnerHUD:
     def create_ui_elements(self):
         menu_frame = tk.Frame(self.root, bg="#0a0a0a", bd=2, relief="groove")
         menu_frame.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=5, pady=5)
-        for col in range(9): menu_frame.grid_columnconfigure(col, weight=1)
+        for col in range(9): menu_frame.grid_columnconfigure(col, weight=1) 
         menu_frame.grid_rowconfigure(0, weight=1)
         
         exit_min_frame = tk.Frame(menu_frame, bg="#0a0a0a")
@@ -622,13 +677,15 @@ class SumnerHUD:
         self.power_btn = tk.Button(menu_frame, text="⚡ SEESTAR", command=self.trigger_fingerbot, bg="#900", fg="white", font=("Arial", 9, "bold"))
         self.power_btn.grid(row=0, column=4, padx=4, pady=4, sticky="ew")
         
-        self.btn_control = tk.Button(menu_frame, text="🔭 SEESTAR ALP", bg="#FFD700", fg="black", font=("Arial", 9, "bold"), command=self.open_seestar_alp)
-        self.btn_control.grid(row=0, column=5, padx=4, pady=4, sticky="ew")
-        
-        self.btn_health = tk.Button(menu_frame, text="🩺 HEALTH CHK", bg="#5D6D7E", fg="white", font=("Arial", 9, "bold"), command=self.run_health_check)
-        self.btn_health.grid(row=0, column=6, padx=4, pady=4, sticky="ew")
+        self.btn_stellarmate = tk.Button(menu_frame, text="🪐 STELLARMATE", bg="#2980B9", fg="white", font=("Arial", 9, "bold"), command=self.open_stellarmate)
+        self.btn_stellarmate.grid(row=0, column=5, padx=4, pady=4, sticky="ew")
+
+        # --- Seestar Cam Button Added to Menu Bar ---
+        self.btn_seestarcam = tk.Button(menu_frame, text="📷 SEESTAR CAM", bg="#D35400", fg="white", font=("Arial", 9, "bold"), command=self.open_seestar_cam)
+        self.btn_seestarcam.grid(row=0, column=6, padx=4, pady=4, sticky="ew")
+
         self.net_lbl = tk.Label(menu_frame, text="NET: CHECKING...", font=("Arial", 9, "bold"), bg="#0a0a0a", fg="cyan")
-        self.net_lbl.grid(row=0, column=7, padx=4, pady=4, sticky="w")
+        self.net_lbl.grid(row=0, column=8, padx=4, pady=4, sticky="e")
         
         self.left_workspace = tk.Frame(self.root, bg="black")
         self.left_workspace.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
@@ -666,7 +723,8 @@ class SumnerHUD:
         
         self.right_panel = tk.Frame(self.root, bg="#050505", bd=3, relief="ridge", highlightthickness=1, highlightbackground="#00FFCC")
         self.right_panel.grid(row=1, column=1, sticky="nsew", padx=10, pady=10)
-        for r in range(12): self.right_panel.grid_rowconfigure(r, weight=1)
+        
+        for r in range(13): self.right_panel.grid_rowconfigure(r, weight=1) 
         self.right_panel.grid_columnconfigure(0, weight=1)
         self.right_panel.grid_columnconfigure(1, weight=3)
         self.right_panel.grid_columnconfigure(2, weight=3)
@@ -684,8 +742,11 @@ class SumnerHUD:
         self.val_dome = self.build_telemetry_row("🏠", "ROOF STAT:", "#EB984E", 9)
         self.val_alpaca = self.build_telemetry_row("🔭", "ALPACA LINK:", "#00FF00", 10)
         
+        # --- Focus Drift Telemetry ---
+        self.val_drift = self.build_telemetry_row("🎯", "FOCUS DRIFT:", "#F1C40F", 11)
+        
         timer_frame = tk.Frame(self.right_panel, bg="#050505")
-        timer_frame.grid(row=11, column=0, columnspan=3, sticky="nsew", padx=5)
+        timer_frame.grid(row=12, column=0, columnspan=3, sticky="nsew", padx=5)
         timer_frame.grid_columnconfigure(1, weight=1)
         self.sync_canvas = tk.Canvas(timer_frame, width=16, height=16, bg="#050505", highlightthickness=0)
         self.sync_canvas.pack(side="left", padx=5)
