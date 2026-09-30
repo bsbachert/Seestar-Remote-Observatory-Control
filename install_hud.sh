@@ -77,7 +77,7 @@ fi
 
 echo "📦 Installing required Python packages into venv..."
 "$VENV_DIR/bin/pip" install --upgrade pip
-"$VENV_DIR/bin/pip" install smbus2 bme280 requests matplotlib numpy opencv-python bleak
+"$VENV_DIR/bin/pip" install smbus2 bme280 requests matplotlib numpy opencv-python bleak pyserial RPi.GPIO
 
 # Ensure the non-root user owns the app directory and venv
 chown -R "$REAL_USER":"$REAL_USER" "$APP_DIR"
