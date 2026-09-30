@@ -1,3 +1,4 @@
+#name=hud_5.py
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
 from PIL import Image, ImageTk, ImageDraw
@@ -91,7 +92,6 @@ class SumnerHUD:
         self.path_email = "/home/pi/allsky_guard/email_receiver.txt"
         self.path_dew_cmd = "/home/pi/allsky_guard/dew_cmd.txt"
         self.email_receiver = "bsbachert@gmail.com"
-        self.earthcam_url = "https://www.myearthcam.com/bsbachert?embed"
         
         if os.path.exists(self.path_email):
             try:
@@ -111,6 +111,7 @@ class SumnerHUD:
         self.path_notes = "/home/pi/allsky_guard/dossier.txt"
         self.path_thresh = "/home/pi/allsky_guard/cloud_threshold.txt"
         self.path_seestar_ip = "/home/pi/allsky_guard/seestar_ip.txt"
+        self.path_seestar_2_ip = "/home/pi/allsky_guard/seestar_2_ip.txt"
         self.path_fingerbot_mac = "/home/pi/allsky_guard/fingerbot_mac.txt"
         self.path_roof_cmd = "/home/pi/allsky_guard/roof_cmd.txt"
         self.path_radar_id = "/home/pi/allsky_guard/radar_coords.txt"
@@ -120,7 +121,12 @@ class SumnerHUD:
         self.img_all = None
         self.img_rad = None
         self.img_clk = None
+        
+        # Dual Seestar Configuration State
         self.seestar_ip = "0.0.0.0"
+        self.seestar_2_ip = "0.0.0.0"
+        self.active_seestar_index = 1  # 1 or 2
+
         self.last_allsky_ts = 0
         self.last_ai_check = 0 
         self.last_log_time = 0 
@@ -143,6 +149,12 @@ class SumnerHUD:
             try:
                 with open(self.path_seestar_ip, "r") as f:
                     self.seestar_ip = f.read().strip()
+            except: pass
+
+        if os.path.exists(self.path_seestar_2_ip):
+            try:
+                with open(self.path_seestar_2_ip, "r") as f:
+                    self.seestar_2_ip = f.read().strip()
             except: pass
 
         self.root.grid_rowconfigure(0, weight=1)
@@ -197,12 +209,66 @@ class SumnerHUD:
 
         asyncio.run(run())
 
-    def open_earthcam(self):
-        self.root.attributes("-topmost", False)
-        try:
-            subprocess.Popen(["chromium-browser", f"--app={self.earthcam_url}"])
-        except Exception:
-            webbrowser.open(self.earthcam_url)
+    def open_seestar_cam(self):
+        pop = tk.Toplevel(self.root)
+        pop.title("Seestar Monitor Camera")
+        pop.geometry(f"{int(self.sw * 0.45)}x{int(self.sh * 0.5)}")
+        pop.config(bg='black')
+        pop.attributes("-topmost", True)
+        
+        active_target_ip = self.seestar_ip if self.active_seestar_index == 1 else self.seestar_2_ip
+        tk.Label(pop, text=f"SEESTAR #{self.active_seestar_index} MONITOR (IP: {active_target_ip})", bg="black", fg="#D35400", font=("Arial", 12, "bold")).pack(pady=10)
+        
+        cam_view_lbl = tk.Label(pop, text=f"Target IP: {active_target_ip}\n(Will bind to http://{active_target_ip}/stream)", bg="#111", fg="white", font=("Courier", 10))
+        cam_view_lbl.pack(expand=True, fill="both", padx=15, pady=15)
+        
+        tk.Button(pop, text="CLOSE", command=pop.destroy, bg="#500", fg="white", font=("Arial", 9, "bold")).pack(side="bottom", pady=10)
+
+    def toggle_seestar_target(self):
+        if self.active_seestar_index == 1:
+            self.active_seestar_index = 2
+            curr_ip = self.seestar_2_ip
+            btn_color = "#D35400"
+        else:
+            self.active_seestar_index = 1
+            curr_ip = self.seestar_ip
+            btn_color = "#8E44AD"
+            
+        self.btn_toggle_seestar.config(text=f"SEESTAR: #{self.active_seestar_index}", bg=btn_color)
+
+    def open_seestar_popout(self):
+        popout = tk.Toplevel(self.root)
+        active_ip = self.seestar_ip if self.active_seestar_index == 1 else self.seestar_2_ip
+        popout.title(f"Seestar #{self.active_seestar_index} Live Stream ({active_ip})")
+        popout.geometry("640x480")
+        popout.attributes("-topmost", True)
+        popout.configure(bg="black")
+        
+        img_label = tk.Label(popout, bg="black")
+        img_label.pack(fill=tk.BOTH, expand=True)
+        
+        def update_image():
+            try:
+                # Direct to unique paths if separated, or fallback to default shared path
+                img_path = f"/home/pi/allsky_guard/ref/latest_seestar_{self.active_seestar_index}.jpg"
+                if not os.path.exists(img_path):
+                    img_path = "/home/pi/allsky_guard/ref/latest_seestar.jpg"
+                    
+                if os.path.exists(img_path):
+                    image = Image.open(img_path)
+                    image = image.resize((640, 480), Image.Resampling.LANCZOS)
+                    photo = ImageTk.PhotoImage(image)
+                    img_label.config(image=photo)
+                    img_label.image = photo 
+                else:
+                    img_label.config(text=f"Awaiting Seestar #{self.active_seestar_index} Frame...\nIP: {active_ip}", fg="yellow", bg="black", font=("Courier", 11))
+            except Exception as e:
+                print(f"Seestar popout stream update error: {e}")
+                
+            if popout.winfo_exists():
+                popout.after(2000, update_image)
+
+        update_image()
 
     def get_radar_coords(self):
         try:
@@ -231,9 +297,12 @@ class SumnerHUD:
         if "AUTO" in current_text:
             self.btn_dew.config(text="DEW HTR: ON", bg="#900")
             with open(self.path_dew_cmd, "w") as f: f.write("ON")
+        elif "ON" in current_text:
+            self.btn_dew.config(text="DEW HTR: OFF", bg="#444")
+            with open(self.path_dew_cmd, "w") as f: f.write("OFF")
         else:
             self.btn_dew.config(text="DEW HTR: AUTO", bg="#333")
-            with open(self.path_dew_cmd, "w") as f: f.write("OFF")
+            with open(self.path_dew_cmd, "w") as f: f.write("AUTO")
 
     def send_email_notification(self, subject, body):
         try:
@@ -290,7 +359,6 @@ class SumnerHUD:
         laplacian = cv2.Laplacian(gray_curr, cv2.CV_64F)
         variance = laplacian[mask == 255].var() if np.any(mask) else 0
         
-        # --- FIXED: Lowered variance threshold from 25.0 to 2.0 to stop false triggers on clear skies ---
         is_obscured = (variance < 2.0)
         
         hour = datetime.now().hour
@@ -352,14 +420,6 @@ class SumnerHUD:
         with open(self.path_roof_cmd, "w") as f: f.write("CLOSE")
         messagebox.showinfo("ROOF", "Manual CLOSE command sent.")
 
-    def open_seestar_alp(self):
-        self.root.attributes("-topmost", False)
-        target_url = "http://pi.local:5432/"
-        try:
-            subprocess.Popen(["chromium-browser", f"--app={target_url}"])
-        except Exception:
-            webbrowser.open(target_url)
-
     def get_connection_type(self):
         try:
             ips = subprocess.check_output("hostname -I", shell=True).decode().split()
@@ -396,9 +456,10 @@ class SumnerHUD:
             except: pass
 
     def check_alpaca_status(self):
-        if not self.seestar_ip or self.seestar_ip == "0.0.0.0": return False
+        target_ip = self.seestar_ip if self.active_seestar_index == 1 else self.seestar_2_ip
+        if not target_ip or target_ip == "0.0.0.0": return False
         try:
-            with socket.create_connection((self.seestar_ip, 32323), timeout=0.5): return True
+            with socket.create_connection((target_ip, 32323), timeout=0.5): return True
         except: return False
 
     def show_weather_history(self):
@@ -492,7 +553,8 @@ class SumnerHUD:
             return e
         rad_entry = create_entry("Radar Station:", self.path_radar_id, "orange")
         csk_entry = create_entry("ClearSky ID:", self.path_csk_id, "#00FFCC")
-        ip_entry  = create_entry("Seestar IP:", self.path_seestar_ip, "#FF33FF")
+        ip_entry  = create_entry("Seestar #1 IP:", self.path_seestar_ip, "#FF33FF")
+        ip2_entry = create_entry("Seestar #2 IP:", self.path_seestar_2_ip, "#FF99FF")
         bt_entry  = create_entry("Fingerbot MAC:", self.path_fingerbot_mac, "#FFCC00")
         mail_entry = create_entry("Alert Email:", self.path_email, "lightgreen")
         txt = scrolledtext.ScrolledText(d_win, bg="black", fg="#00FFCC", font=("Courier", 14), insertbackground="white")
@@ -503,11 +565,13 @@ class SumnerHUD:
             with open(self.path_radar_id, "w") as f: f.write(rad_entry.get().upper().strip())
             with open(self.path_csk_id, "w") as f: f.write(csk_entry.get().strip())
             with open(self.path_seestar_ip, "w") as f: f.write(ip_entry.get().strip())
+            with open(self.path_seestar_2_ip, "w") as f: f.write(ip2_entry.get().strip())
             with open(self.path_fingerbot_mac, "w") as f: f.write(bt_entry.get().strip())
             with open(self.path_email, "w") as f: f.write(mail_entry.get().strip())
             with open(self.path_notes, 'w') as f: f.write(txt.get('1.0', 'end'))
             with open(self.path_thresh, 'w') as f: f.write(str(radius_slider.get()))
             self.seestar_ip = ip_entry.get().strip()
+            self.seestar_2_ip = ip2_entry.get().strip()
             self.email_receiver = mail_entry.get().strip()
             self.ai_radius_pct = radius_slider.get()
             d_win.destroy()
@@ -596,7 +660,14 @@ class SumnerHUD:
                                 self.right_panel.nametowidget(self.val_wind).config(text=f"{wind_val} mph")
                             except: pass
                         elif "HEATER" in u_line:
-                            self.right_panel.nametowidget(self.val_heat).config(text=val)
+                            btn_state_text = self.btn_dew.cget("text")
+                            if "ON" in btn_state_text:
+                                display_heat = "ON (Manual)"
+                            elif "OFF" in btn_state_text:
+                                display_heat = "OFF (Manual)"
+                            else:
+                                display_heat = f"{val} (AUTO)"
+                            self.right_panel.nametowidget(self.val_heat).config(text=display_heat)
                         elif "RAIN" in u_line or "PRECIP" in u_line:
                             self.is_wet = "WET" in val.upper()
                             self.right_panel.nametowidget(self.val_rain).config(text="WET" if self.is_wet else "DRY", fg="red" if self.is_wet else "cyan")
@@ -606,7 +677,6 @@ class SumnerHUD:
                                 self.right_panel.nametowidget(self.val_pres).config(text=f"{raw_p * 0.02953:.2f} in")
                             except: pass
 
-                # --- FOCUS DRIFT INTEGRATION ---
                 current_drift = 0.0
                 if amb_t is not None:
                     current_drift = self.focus_monitor.check_focus_drift(amb_t)
@@ -655,7 +725,7 @@ class SumnerHUD:
     def create_ui_elements(self):
         menu_frame = tk.Frame(self.root, bg="#0a0a0a", bd=2, relief="groove")
         menu_frame.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=5, pady=5)
-        for col in range(9): menu_frame.grid_columnconfigure(col, weight=1) 
+        for col in range(10): menu_frame.grid_columnconfigure(col, weight=1) 
         menu_frame.grid_rowconfigure(0, weight=1)
         
         exit_min_frame = tk.Frame(menu_frame, bg="#0a0a0a")
@@ -668,18 +738,23 @@ class SumnerHUD:
 
         tk.Button(menu_frame, text="WEATHER HIST", command=self.show_weather_history, bg="#003366", fg="white", font=("Arial", 9, "bold")).grid(row=0, column=2, padx=4, pady=4, sticky="ew")
         tk.Button(menu_frame, text="DOSSIER / MAINT", command=self.open_dossier, bg="#222", fg="white", font=("Arial", 9, "bold")).grid(row=0, column=3, padx=4, pady=4, sticky="ew")
-        self.power_btn = tk.Button(menu_frame, text="⚡ SEESTAR", command=self.trigger_fingerbot, bg="#900", fg="white", font=("Arial", 9, "bold"))
+        
+        self.power_btn = tk.Button(menu_frame, text="⚡ FINGERBOT", command=self.trigger_fingerbot, bg="#900", fg="white", font=("Arial", 9, "bold"))
         self.power_btn.grid(row=0, column=4, padx=4, pady=4, sticky="ew")
         
-        self.btn_control = tk.Button(menu_frame, text="🔭 SEESTAR ALP", bg="#FFD700", fg="black", font=("Arial", 9, "bold"), command=self.open_seestar_alp)
-        self.btn_control.grid(row=0, column=5, padx=4, pady=4, sticky="ew")
-        
-        # --- EarthCam Button Added to Menu Bar ---
-        self.btn_earthcam = tk.Button(menu_frame, text="🌎 EARTHCAM", bg="#1ABC9C", fg="black", font=("Arial", 9, "bold"), command=self.open_earthcam)
-        self.btn_earthcam.grid(row=0, column=6, padx=4, pady=4, sticky="ew")
+        self.btn_seestarcam = tk.Button(menu_frame, text="📷 SEESTAR CAM", bg="#D35400", fg="white", font=("Arial", 9, "bold"), command=self.open_seestar_cam)
+        self.btn_seestarcam.grid(row=0, column=5, padx=4, pady=4, sticky="ew")
+
+        # Seestar #1 / #2 Scope Selector Button
+        self.btn_toggle_seestar = tk.Button(menu_frame, text="SEESTAR: #1", bg="#8E44AD", fg="white", font=("Arial", 9, "bold"), command=self.toggle_seestar_target)
+        self.btn_toggle_seestar.grid(row=0, column=6, padx=4, pady=4, sticky="ew")
+
+        # Seestar Live Stream Popout Button
+        self.btn_popout = tk.Button(menu_frame, text="📺 SEESTAR POP", bg="#27AE60", fg="white", font=("Arial", 9, "bold"), command=self.open_seestar_popout)
+        self.btn_popout.grid(row=0, column=7, padx=4, pady=4, sticky="ew")
 
         self.net_lbl = tk.Label(menu_frame, text="NET: CHECKING...", font=("Arial", 9, "bold"), bg="#0a0a0a", fg="cyan")
-        self.net_lbl.grid(row=0, column=8, padx=4, pady=4, sticky="e")
+        self.net_lbl.grid(row=0, column=9, padx=4, pady=4, sticky="e")
         
         self.left_workspace = tk.Frame(self.root, bg="black")
         self.left_workspace.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
@@ -736,7 +811,6 @@ class SumnerHUD:
         self.val_dome = self.build_telemetry_row("🏠", "ROOF STAT:", "#EB984E", 9)
         self.val_alpaca = self.build_telemetry_row("🔭", "ALPACA LINK:", "#00FF00", 10)
         
-        # --- Focus Drift Telemetry ---
         self.val_drift = self.build_telemetry_row("🎯", "FOCUS DRIFT:", "#F1C40F", 11)
         
         timer_frame = tk.Frame(self.right_panel, bg="#050505")

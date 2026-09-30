@@ -1,8 +1,7 @@
-#name=hud_2.py
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
 from PIL import Image, ImageTk, ImageDraw
-import os, subprocess, random, math, sys, fcntl, socket, time
+import os, subprocess, random, math, sys, fcntl, socket, time, json
 import smtplib
 import requests
 import webbrowser
@@ -16,6 +15,13 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import shutil
 import asyncio
 import threading
+
+# GPIO Hardware Import for Anemometer
+try:
+    import RPi.GPIO as GPIO
+    HAS_GPIO = True
+except ImportError:
+    HAS_GPIO = False
 
 try:
     lock_file = open('/tmp/sumner_hud.lock', 'w')
@@ -86,6 +92,21 @@ class SumnerHUD:
         # Instantiate the Focus Tracker
         self.focus_monitor = FocusTracker(self.root)
 
+        # GPIO Anemometer Setup (Brown -> GPIO 4, Blue -> Ground)
+        self.gpio_enabled = False
+        self.pulse_count = 0
+        self.last_gpio_wind_check = time.time()
+        self.gpio_wind_speed_mph = 0.0
+
+        if HAS_GPIO:
+            try:
+                GPIO.setmode(GPIO.BCM)
+                GPIO.setup(4, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+                GPIO.add_event_detect(4, GPIO.FALLING, callback=self._anemometer_pulse, bouncetime=20)
+                self.gpio_enabled = True
+            except Exception as e:
+                print(f"[HUD] GPIO 4 Anemometer Initialization Error: {e}")
+
         # Existing Configuration
         self.email_sender = "bsbachert@gmail.com"
         self.email_pass = "pucapkfuesrrnasm" 
@@ -111,6 +132,7 @@ class SumnerHUD:
         self.path_notes = "/home/pi/allsky_guard/dossier.txt"
         self.path_thresh = "/home/pi/allsky_guard/cloud_threshold.txt"
         self.path_seestar_ip = "/home/pi/allsky_guard/seestar_ip.txt"
+        self.path_seestar_2_ip = "/home/pi/allsky_guard/seestar_2_ip.txt"
         self.path_fingerbot_mac = "/home/pi/allsky_guard/fingerbot_mac.txt"
         self.path_roof_cmd = "/home/pi/allsky_guard/roof_cmd.txt"
         self.path_radar_id = "/home/pi/allsky_guard/radar_coords.txt"
@@ -120,7 +142,23 @@ class SumnerHUD:
         self.img_all = None
         self.img_rad = None
         self.img_clk = None
+        
+        # Image Caching Tuples: (photo_object, mtime, width, height)
+        self._cache_allsky = (None, -1, 0, 0)
+        self._cache_radar = (None, -1, 0, 0)
+        self._cache_clock = (None, -1, 0, 0)
+
+        # Alpaca link status cache to prevent blocking GUI loop
+        self._cached_alpaca_status = False
+        self._last_alpaca_check = 0
+        
+        # Dual Seestar Configuration State
         self.seestar_ip = "0.0.0.0"
+        self.seestar_2_ip = "0.0.0.0"
+        self.active_seestar_index = 1  # 1 or 2
+        self.seestar_1_frame_path = None
+        self.seestar_2_frame_path = None
+
         self.last_allsky_ts = 0
         self.last_ai_check = 0 
         self.last_log_time = 0 
@@ -145,6 +183,12 @@ class SumnerHUD:
                     self.seestar_ip = f.read().strip()
             except: pass
 
+        if os.path.exists(self.path_seestar_2_ip):
+            try:
+                with open(self.path_seestar_2_ip, "r") as f:
+                    self.seestar_2_ip = f.read().strip()
+            except: pass
+
         self.root.grid_rowconfigure(0, weight=1)
         self.root.grid_rowconfigure(1, weight=10)
         self.root.grid_rowconfigure(2, weight=3)
@@ -159,8 +203,32 @@ class SumnerHUD:
         self.root.bind("<Map>", self.on_restore)
         
         self.fetch_online_wind_dir()
+        self.fetch_seestar_frame()
         self.fetch_radar_auto()
         self.update_loop()
+
+    def _anemometer_pulse(self, channel):
+        self.pulse_count += 1
+
+    def calculate_gpio_wind_speed(self):
+        """Calculates wind speed in MPH from pulse counts on GPIO 4."""
+        now = time.time()
+        elapsed = now - self.last_gpio_wind_check
+        if elapsed >= 2.0:
+            pulses = self.pulse_count
+            self.pulse_count = 0
+            self.last_gpio_wind_check = now
+            pulses_per_sec = pulses / elapsed
+            self.gpio_wind_speed_mph = round(pulses_per_sec * 1.492, 1)
+        return self.gpio_wind_speed_mph
+
+    def ensure_mounted(self, mount_point="/mnt/seestar"):
+        """Checks if the mount point is active and attempts auto-mount if disconnected."""
+        if not os.path.ismount(mount_point):
+            try:
+                subprocess.run(["mount", mount_point], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception as e:
+                print(f"[HUD] Auto-mount failed for {mount_point}: {e}")
 
     def trigger_fingerbot(self):
         pop = tk.Toplevel(self.root)
@@ -197,14 +265,6 @@ class SumnerHUD:
 
         asyncio.run(run())
 
-    def open_stellarmate(self):
-        self.root.attributes("-topmost", False)
-        target_url = "http://stellarmate.local"
-        try:
-            subprocess.Popen(["chromium-browser", f"--app={target_url}"])
-        except Exception:
-            webbrowser.open(target_url)
-
     def open_seestar_cam(self):
         pop = tk.Toplevel(self.root)
         pop.title("Seestar Monitor Camera")
@@ -212,12 +272,141 @@ class SumnerHUD:
         pop.config(bg='black')
         pop.attributes("-topmost", True)
         
-        tk.Label(pop, text="SEESTAR MONITOR (Awaiting ESP32-CAM Stream)", bg="black", fg="#D35400", font=("Arial", 12, "bold")).pack(pady=10)
+        active_target_ip = self.seestar_ip if self.active_seestar_index == 1 else self.seestar_2_ip
+        tk.Label(pop, text=f"SEESTAR #{self.active_seestar_index} MONITOR (IP: {active_target_ip})", bg="black", fg="#D35400", font=("Arial", 12, "bold")).pack(pady=10)
         
-        cam_view_lbl = tk.Label(pop, text="Stream URL not configured yet\n(Will bind to http://<esp32-ip>/stream)", bg="#111", fg="white", font=("Courier", 10))
+        cam_view_lbl = tk.Label(pop, text=f"Target IP: {active_target_ip}\n(Will bind to http://{active_target_ip}/stream)", bg="#111", fg="white", font=("Courier", 10))
         cam_view_lbl.pack(expand=True, fill="both", padx=15, pady=15)
         
         tk.Button(pop, text="CLOSE", command=pop.destroy, bg="#500", fg="white", font=("Arial", 9, "bold")).pack(side="bottom", pady=10)
+
+    def toggle_seestar_target(self, event=None):
+        """Toggles active target between Seestar 1 and Seestar 2 and forces cache refresh."""
+        self.active_seestar_index = 2 if getattr(self, "active_seestar_index", 1) == 1 else 1
+        
+        # Invalidate display cache for immediate UI update
+        if hasattr(self, "_seestar_cache"):
+            delattr(self, "_seestar_cache")
+            
+        if hasattr(self, "seestar_btn"):
+            self.seestar_btn.config(text=f"S{self.active_seestar_index}")
+            
+        self.update_gui()
+
+    def update_gui(self):
+        """Updates main navigation bar components upon state changes."""
+        if hasattr(self, "btn_toggle_seestar"):
+            btn_color = "#D35400" if getattr(self, "active_seestar_index", 1) == 2 else "#8E44AD"
+            self.btn_toggle_seestar.config(text=f"SEESTAR: #{self.active_seestar_index}", bg=btn_color)
+
+    def open_seestar_popout(self):
+        popout = tk.Toplevel(self.root)
+        active_ip = self.seestar_ip if self.active_seestar_index == 1 else self.seestar_2_ip
+        popout.title(f"Seestar #{self.active_seestar_index} Live Telemetry ({active_ip})")
+        popout.geometry("960x760")
+        popout.attributes("-topmost", True)
+        popout.configure(bg="black")
+
+        status_var = tk.StringVar(value="Connecting to event socket...")
+        
+        # Status Overlay Header
+        status_label = tk.Label(
+            popout,
+            textvariable=status_var,
+            fg="#00FF00",
+            bg="#111111",
+            font=("Courier", 10, "bold"),
+            anchor="w",
+            justify="left",
+            padx=10,
+            pady=5
+        )
+        status_label.pack(fill=tk.X)
+
+        # Image Frame Canvas
+        img_label = tk.Label(popout, bg="black")
+        img_label.pack(fill=tk.BOTH, expand=True)
+
+        telemetry = {
+            "stacked": 0,
+            "dropped": 0,
+            "total": 0,
+            "state": "Idle",
+            "temp": 0.0,
+            "running": True
+        }
+
+        def socket_listener():
+            while telemetry["running"]:
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                        s.settimeout(5.0)
+                        s.connect((active_ip, 4700))
+                        
+                        stream = s.makefile('r')
+                        for line in stream:
+                            if not telemetry["running"]:
+                                break
+                            line = line.strip()
+                            if not line:
+                                continue
+                            
+                            try:
+                                msg = json.loads(line)
+                                event = msg.get("Event")
+                                
+                                if event == "Stack":
+                                    telemetry["state"] = msg.get("state", "working")
+                                    telemetry["stacked"] = msg.get("stacked_frame", telemetry["stacked"])
+                                    telemetry["dropped"] = msg.get("dropped_frame", telemetry["dropped"])
+                                    telemetry["total"] = msg.get("total_frame", telemetry["total"])
+                                elif event == "PiStatus":
+                                    telemetry["temp"] = msg.get("temp", telemetry["temp"])
+                            except json.JSONDecodeError:
+                                pass
+                except Exception as e:
+                    telemetry["state"] = f"Reconnecting socket... ({e})"
+                    time.sleep(3)
+
+        threading.Thread(target=socket_listener, daemon=True).start()
+
+        def update_gui():
+            if not popout.winfo_exists():
+                telemetry["running"] = False
+                return
+
+            # Update live text banner
+            status_text = (
+                f"STATUS: {telemetry['state'].upper()} | "
+                f"STACKED: {telemetry['stacked']}/{telemetry['total']} | "
+                f"DROPPED: {telemetry['dropped']} | "
+                f"TEMP: {telemetry['temp']:.1f}°C"
+            )
+            status_var.set(status_text)
+
+            # Update latest image from Samba directory
+            latest_path = getattr(self, f"seestar_{self.active_seestar_index}_frame_path", None)
+            if latest_path and os.path.exists(latest_path):
+                try:
+                    img = Image.open(latest_path)
+                    win_w = max(popout.winfo_width(), 400)
+                    win_h = max(popout.winfo_height() - 40, 300)
+                    img.thumbnail((win_w, win_h), Image.Resampling.LANCZOS)
+                    
+                    photo = ImageTk.PhotoImage(img)
+                    img_label.config(image=photo)
+                    img_label.image = photo
+                except Exception:
+                    pass
+
+            popout.after(500, update_gui)
+
+        def on_close():
+            telemetry["running"] = False
+            popout.destroy()
+
+        popout.protocol("WM_DELETE_WINDOW", on_close)
+        update_gui()
 
     def get_radar_coords(self):
         try:
@@ -246,9 +435,12 @@ class SumnerHUD:
         if "AUTO" in current_text:
             self.btn_dew.config(text="DEW HTR: ON", bg="#900")
             with open(self.path_dew_cmd, "w") as f: f.write("ON")
+        elif "ON" in current_text:
+            self.btn_dew.config(text="DEW HTR: OFF", bg="#444")
+            with open(self.path_dew_cmd, "w") as f: f.write("OFF")
         else:
             self.btn_dew.config(text="DEW HTR: AUTO", bg="#333")
-            with open(self.path_dew_cmd, "w") as f: f.write("OFF")
+            with open(self.path_dew_cmd, "w") as f: f.write("AUTO")
 
     def send_email_notification(self, subject, body):
         try:
@@ -272,6 +464,11 @@ class SumnerHUD:
         except Exception as e: print(f"Logging Error: {e}")
 
     def shutdown(self):
+        if HAS_GPIO and self.gpio_enabled:
+            try:
+                GPIO.cleanup(4)
+            except Exception:
+                pass
         try:
             fcntl.lockf(lock_file, fcntl.LOCK_UN)
             lock_file.close()
@@ -340,10 +537,6 @@ class SumnerHUD:
             status = f"AI: {self.ai_sky_status}"
 
         self.btn_ai.config(text=f"{status}\n({folder.upper()} | Var: {variance:.1f})", bg=color)
-        
-        if self.btn_dew and "AUTO" in self.btn_dew.cget("text"):
-            with open(self.path_dew_cmd, "w") as f:
-                f.write("ON" if is_obscured else "OFF")
 
         if manual_click:
             debug_img = current_img.copy()
@@ -375,23 +568,37 @@ class SumnerHUD:
         except: return "UNKNOWN", "gray"
 
     def create_placeholder(self, text, w, h):
-        if w <= 0 or h <= 0: w, h = 100, 100
+        if w <= 10 or h <= 10: w, h = 100, 100
         img = Image.new('RGB', (w, h), color=(15, 15, 15))
         draw = ImageDraw.Draw(img)
         draw.rectangle([0, 0, w-1, h-1], outline="red", width=3)
         draw.text((w//2, h//2), text, fill="white", anchor="mm", align="center")
         return ImageTk.PhotoImage(img)
 
-    def load_scale(self, path, w, h, label):
-        if w <= 0 or h <= 0: w, h = 100, 100
+    def load_scale(self, path, w, h, label, cache_attr):
+        """Optimized with caching to avoid redundant disk I/O and PIL resizing every second."""
+        if w <= 10 or h <= 10: w, h = 100, 100
         if not os.path.exists(path) or os.path.getsize(path) < 100:
             return self.create_placeholder(f"SET {label} ID\nIN DOSSIER", w, h)
+        
+        try:
+            mtime = os.path.getmtime(path)
+        except Exception:
+            mtime = 0
+            
+        cached_photo, cached_mtime, cached_w, cached_h = getattr(self, cache_attr, (None, -1, 0, 0))
+        if cached_photo is not None and cached_mtime == mtime and cached_w == w and cached_h == h:
+            return cached_photo
+            
         try:
             with Image.open(path) as raw:
                 img = raw.convert("RGB")
                 img.thumbnail((w, h), Image.Resampling.LANCZOS)
-                return ImageTk.PhotoImage(img)
-        except: return self.create_placeholder(f"ERROR LOADING\n{label}", w, h)
+                photo = ImageTk.PhotoImage(img)
+                setattr(self, cache_attr, (photo, mtime, w, h))
+                return photo
+        except: 
+            return self.create_placeholder(f"ERROR LOADING\n{label}", w, h)
 
     def check_cleaning_reminder(self):
         if os.path.exists(self.path_hours):
@@ -402,10 +609,74 @@ class SumnerHUD:
             except: pass
 
     def check_alpaca_status(self):
-        if not self.seestar_ip or self.seestar_ip == "0.0.0.0": return False
+        """Checks if the Seestar native API port (4700) is online, cached every 10s to prevent GUI lag."""
+        now_ts = time.time()
+        if now_ts - self._last_alpaca_check < 10:
+            return self._cached_alpaca_status
+
+        self._last_alpaca_check = now_ts
+        target_ip = self.seestar_ip if self.active_seestar_index == 1 else self.seestar_2_ip
+        if not target_ip or target_ip == "0.0.0.0": 
+            self._cached_alpaca_status = False
+            return False
         try:
-            with socket.create_connection((self.seestar_ip, 32323), timeout=0.5): return True
-        except: return False
+            with socket.create_connection((target_ip, 4700), timeout=1.5):
+                self._cached_alpaca_status = True
+                return True
+        except (socket.timeout, socket.error):
+            self._cached_alpaca_status = False
+            return False
+
+    def fetch_seestar_frame(self):
+        """Fetches the absolute latest live JPG (stacked or sub-frame) from the active Seestar SMB share."""
+        import glob
+        import shutil
+        import os
+
+        idx = getattr(self, "active_seestar_index", 1)
+        mount_dir = "/mnt/seestar" if idx == 1 else f"/mnt/seestar{idx}"
+
+        # Auto-mount check prior to frame scan
+        self.ensure_mounted(mount_dir)
+
+        out_path = f"/home/pi/allsky_guard/ref/latest_seestar_{idx}.jpg"
+        os.makedirs("/home/pi/allsky_guard/ref", exist_ok=True)
+
+        def get_file_key(filepath):
+            try:
+                mtime = os.path.getmtime(filepath)
+            except Exception:
+                mtime = 0
+            # Combine mtime with filename string so chronological timestamps win tie-breaks
+            return (mtime, os.path.basename(filepath))
+
+        try:
+            # Search all JPGs across the active unit mount
+            all_jpgs = (
+                glob.glob(f"{mount_dir}/**/*.jpg", recursive=True) + 
+                glob.glob(f"{mount_dir}/**/*.JPG", recursive=True)
+            )
+            
+            # Exclude only thumbnail images (_thn.jpg); include active live subframes and stacks
+            valid_jpgs = [
+                f for f in all_jpgs 
+                if not f.lower().endswith("_thn.jpg")
+            ]
+
+            if valid_jpgs:
+                latest_jpg = max(valid_jpgs, key=get_file_key)
+                shutil.copy(latest_jpg, out_path)
+                
+                # Invalidate image cache so Tkinter forces an immediate refresh on screen
+                if hasattr(self, "_seestar_cache"):
+                    delattr(self, "_seestar_cache")
+                    
+                setattr(self, f"seestar_{idx}_frame_path", out_path)
+        except Exception as e:
+            print(f"[HUD] Seestar frame fetch error on {mount_dir}: {e}")
+
+        # Re-check every 10 seconds to limit Samba bandwidth
+        self.root.after(10000, self.fetch_seestar_frame)
 
     def show_weather_history(self):
         if not os.path.exists(self.path_sensors_log):
@@ -432,10 +703,19 @@ class SumnerHUD:
                         if len(parts) > 5: focus_drift.append(float(parts[5].split(':')[1]))
         except Exception as e: print(f"Log Parse Error: {e}")
         
-        fig, axs = plt.subplots(5, 1, figsize=(10, 12), dpi=100, sharex=True)
+        fig_w = max(6.0, self.sw / 100.0)
+        fig_h = max(4.0, (self.sh - 80) / 100.0)
+        
+        fig, axs = plt.subplots(5, 1, figsize=(fig_w, fig_h), dpi=100, sharex=True)
         fig.set_facecolor('black')
         
-        sets = [(temps, "TEMP (F)", "#EC7063"), (hums, "HUM (%)", "#5499C7"), (winds, "WIND (MPH)", "#F4D03F"), (press, "BARO (IN)", "#58D68D"), (focus_drift, "FOCUS DRIFT", "#AAB7B8")]
+        sets = [
+            (temps, "TEMP (F)", "#EC7063"), 
+            (hums, "HUM (%)", "#5499C7"), 
+            (winds, "WIND (MPH)", "#F4D03F"), 
+            (press, "BARO (IN)", "#58D68D"), 
+            (focus_drift, "FOCUS DRIFT", "#AAB7B8")
+        ]
         
         for i, (data, label, color) in enumerate(sets):
             if data: axs[i].plot(times, data, color=color, linewidth=1.5)
@@ -446,11 +726,14 @@ class SumnerHUD:
             axs[i].xaxis.set_major_locator(mdates.HourLocator(interval=2))
             axs[i].grid(color='#333', linestyle='--')
             for s in axs[i].spines.values(): s.set_color('#444')
-        plt.xticks(rotation=45)
+            
+        plt.setp(axs[-1].get_xticklabels(), rotation=45, ha='right')
+        fig.tight_layout()
         
         tk.Button(pop, text="CLOSE", command=pop.destroy, bg="#500", fg="white", font=("Arial", 10, "bold")).pack(side="bottom", pady=10)
         canvas = FigureCanvasTkAgg(fig, master=pop)
-        canvas.draw(); canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
     def fetch_online_wind_dir(self):
         coords = self.get_radar_coords()
@@ -498,7 +781,8 @@ class SumnerHUD:
             return e
         rad_entry = create_entry("Radar Station:", self.path_radar_id, "orange")
         csk_entry = create_entry("ClearSky ID:", self.path_csk_id, "#00FFCC")
-        ip_entry  = create_entry("Seestar IP:", self.path_seestar_ip, "#FF33FF")
+        ip_entry  = create_entry("Seestar #1 IP:", self.path_seestar_ip, "#FF33FF")
+        ip2_entry = create_entry("Seestar #2 IP:", self.path_seestar_2_ip, "#FF99FF")
         bt_entry  = create_entry("Fingerbot MAC:", self.path_fingerbot_mac, "#FFCC00")
         mail_entry = create_entry("Alert Email:", self.path_email, "lightgreen")
         txt = scrolledtext.ScrolledText(d_win, bg="black", fg="#00FFCC", font=("Courier", 14), insertbackground="white")
@@ -509,11 +793,13 @@ class SumnerHUD:
             with open(self.path_radar_id, "w") as f: f.write(rad_entry.get().upper().strip())
             with open(self.path_csk_id, "w") as f: f.write(csk_entry.get().strip())
             with open(self.path_seestar_ip, "w") as f: f.write(ip_entry.get().strip())
+            with open(self.path_seestar_2_ip, "w") as f: f.write(ip2_entry.get().strip())
             with open(self.path_fingerbot_mac, "w") as f: f.write(bt_entry.get().strip())
             with open(self.path_email, "w") as f: f.write(mail_entry.get().strip())
             with open(self.path_notes, 'w') as f: f.write(txt.get('1.0', 'end'))
             with open(self.path_thresh, 'w') as f: f.write(str(radius_slider.get()))
             self.seestar_ip = ip_entry.get().strip()
+            self.seestar_2_ip = ip2_entry.get().strip()
             self.email_receiver = mail_entry.get().strip()
             self.ai_radius_pct = radius_slider.get()
             d_win.destroy()
@@ -541,18 +827,38 @@ class SumnerHUD:
             self.send_email_notification("Dusk Sensor Snapshot", f"Observatory status at 18:00:\n\n{sensor_report}")
             self.dusk_sent_today = now.date()
             
-        self.left_workspace.update()
-        w_half = int(self.left_workspace.winfo_width() / 2) - 10
-        h_main = int(self.left_workspace.winfo_height() * 0.5) - 10
-        w_full = int(self.left_workspace.winfo_width()) - 15
-        h_lower = int(self.left_workspace.winfo_height() * 0.35) - 10
+        self.left_workspace.update_idletasks()
+
+        cw_all = self.all_canvas.winfo_width()
+        ch_all = self.all_canvas.winfo_height()
+        if cw_all <= 10 or ch_all <= 10:
+            cw_all = int(self.left_workspace.winfo_width() / 2) - 10
+            ch_all = int(self.left_workspace.winfo_height() * 0.5) - 10
+
+        cw_rad = self.rad_canvas.winfo_width()
+        ch_rad = self.rad_canvas.winfo_height()
+        if cw_rad <= 10 or ch_rad <= 10:
+            cw_rad = int(self.left_workspace.winfo_width() / 2) - 10
+            ch_rad = int(self.left_workspace.winfo_height() * 0.5) - 10
+
+        cw_clk = self.clk_canvas.winfo_width()
+        ch_clk = self.clk_canvas.winfo_height()
+        if cw_clk <= 10 or ch_clk <= 10:
+            cw_clk = int(self.left_workspace.winfo_width()) - 15
+            ch_clk = int(self.left_workspace.winfo_height() * 0.35) - 10
         
-        self.img_all = self.load_scale(self.path_allsky, w_half, h_main, "AllSky")
-        self.all_canvas.itemconfig(self.all_img_id, image=self.img_all)
-        self.img_rad = self.load_scale(self.path_radar, w_half, h_main, "Radar")
-        self.rad_canvas.itemconfig(self.rad_img_id, image=self.img_rad)
-        self.img_clk = self.load_scale(self.path_clock, w_full, h_lower, "ClearSky")
-        self.clk_canvas.itemconfig(self.clk_img_id, image=self.img_clk)
+        # Using cached image loader to eliminate redundant disk I/O and PIL resizing
+        self.img_all = self.load_scale(self.path_allsky, cw_all, ch_all, "AllSky", "_cache_allsky")
+        self.all_canvas.coords(self.all_img_id, cw_all // 2, ch_all // 2)
+        self.all_canvas.itemconfig(self.all_img_id, image=self.img_all, anchor='center')
+
+        self.img_rad = self.load_scale(self.path_radar, cw_rad, ch_rad, "Radar", "_cache_radar")
+        self.rad_canvas.coords(self.rad_img_id, cw_rad // 2, ch_rad // 2)
+        self.rad_canvas.itemconfig(self.rad_img_id, image=self.img_rad, anchor='center')
+
+        self.img_clk = self.load_scale(self.path_clock, cw_clk, ch_clk, "ClearSky", "_cache_clock")
+        self.clk_canvas.coords(self.clk_img_id, cw_clk // 2, ch_clk // 2)
+        self.clk_canvas.itemconfig(self.clk_img_id, image=self.img_clk, anchor='center')
         
         current_time_ms = int(time.time() * 1000)
         if os.path.exists(self.path_allsky):
@@ -578,9 +884,15 @@ class SumnerHUD:
                     self.val_hrs.config(text=f"{num_hrs:.1f} HRS", fg=hrs_col)
             except: pass
             
+        if self.gpio_enabled:
+            wind_val = self.calculate_gpio_wind_speed()
+            self.right_panel.nametowidget(self.val_wind).config(text=f"{wind_val} mph")
+
         if os.path.exists(self.path_sensors):
             try:
-                amb_t, hum_val, wind_val, raw_p = None, None, None, None
+                amb_t, hum_val, raw_p = None, None, None
+                if not self.gpio_enabled:
+                    wind_val = None
                 sensor_report = ""
                 with open(self.path_sensors, "r") as f:
                     for line in f:
@@ -596,13 +908,20 @@ class SumnerHUD:
                                 hum_val = float(''.join(c for c in clean_val if c in '0123456789.-'))
                                 self.right_panel.nametowidget(self.val_hum).config(text=f"{hum_val}%")
                             except: pass
-                        elif "WIND SPD" in u_line:
+                        elif "WIND SPD" in u_line and not self.gpio_enabled:
                             try:
                                 wind_val = float(''.join(c for c in val if c in '0123456789.-'))
                                 self.right_panel.nametowidget(self.val_wind).config(text=f"{wind_val} mph")
                             except: pass
                         elif "HEATER" in u_line:
-                            self.right_panel.nametowidget(self.val_heat).config(text=val)
+                            btn_state_text = self.btn_dew.cget("text")
+                            if "ON" in btn_state_text:
+                                display_heat = "ON (Manual)"
+                            elif "OFF" in btn_state_text:
+                                display_heat = "OFF (Manual)"
+                            else:
+                                display_heat = f"{val} (AUTO)"
+                            self.right_panel.nametowidget(self.val_heat).config(text=display_heat)
                         elif "RAIN" in u_line or "PRECIP" in u_line:
                             self.is_wet = "WET" in val.upper()
                             self.right_panel.nametowidget(self.val_rain).config(text="WET" if self.is_wet else "DRY", fg="red" if self.is_wet else "cyan")
@@ -612,7 +931,6 @@ class SumnerHUD:
                                 self.right_panel.nametowidget(self.val_pres).config(text=f"{raw_p * 0.02953:.2f} in")
                             except: pass
 
-                # --- FOCUS DRIFT INTEGRATION ---
                 current_drift = 0.0
                 if amb_t is not None:
                     current_drift = self.focus_monitor.check_focus_drift(amb_t)
@@ -632,6 +950,11 @@ class SumnerHUD:
                     self.right_panel.nametowidget(self.val_dew).config(text=f"{dew_f:.1f} F")
                 
                 extreme_dew = (amb_t - dew_f) < 5 if (amb_t and dew_f) else False
+                
+                if self.btn_dew and "AUTO" in self.btn_dew.cget("text"):
+                    with open(self.path_dew_cmd, "w") as f:
+                        f.write("ON" if extreme_dew else "OFF")
+                        
                 ai_safe = ("CLEAR" in self.ai_sky_status or "INITIALIZING" in self.ai_sky_status)
                 
                 if not self.is_wet and not self.is_obscured and (not wind_val or wind_val < 15) and not extreme_dew and ai_safe:
@@ -661,7 +984,7 @@ class SumnerHUD:
     def create_ui_elements(self):
         menu_frame = tk.Frame(self.root, bg="#0a0a0a", bd=2, relief="groove")
         menu_frame.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=5, pady=5)
-        for col in range(9): menu_frame.grid_columnconfigure(col, weight=1) 
+        for col in range(10): menu_frame.grid_columnconfigure(col, weight=1) 
         menu_frame.grid_rowconfigure(0, weight=1)
         
         exit_min_frame = tk.Frame(menu_frame, bg="#0a0a0a")
@@ -674,18 +997,22 @@ class SumnerHUD:
 
         tk.Button(menu_frame, text="WEATHER HIST", command=self.show_weather_history, bg="#003366", fg="white", font=("Arial", 9, "bold")).grid(row=0, column=2, padx=4, pady=4, sticky="ew")
         tk.Button(menu_frame, text="DOSSIER / MAINT", command=self.open_dossier, bg="#222", fg="white", font=("Arial", 9, "bold")).grid(row=0, column=3, padx=4, pady=4, sticky="ew")
-        self.power_btn = tk.Button(menu_frame, text="⚡ SEESTAR", command=self.trigger_fingerbot, bg="#900", fg="white", font=("Arial", 9, "bold"))
+        
+        self.power_btn = tk.Button(menu_frame, text="⚡ FINGERBOT", command=self.trigger_fingerbot, bg="#900", fg="white", font=("Arial", 9, "bold"))
         self.power_btn.grid(row=0, column=4, padx=4, pady=4, sticky="ew")
         
-        self.btn_stellarmate = tk.Button(menu_frame, text="🪐 STELLARMATE", bg="#2980B9", fg="white", font=("Arial", 9, "bold"), command=self.open_stellarmate)
-        self.btn_stellarmate.grid(row=0, column=5, padx=4, pady=4, sticky="ew")
-
-        # --- Seestar Cam Button Added to Menu Bar ---
         self.btn_seestarcam = tk.Button(menu_frame, text="📷 SEESTAR CAM", bg="#D35400", fg="white", font=("Arial", 9, "bold"), command=self.open_seestar_cam)
-        self.btn_seestarcam.grid(row=0, column=6, padx=4, pady=4, sticky="ew")
+        self.btn_seestarcam.grid(row=0, column=5, padx=4, pady=4, sticky="ew")
+
+        self.btn_toggle_seestar = tk.Button(menu_frame, text="SEESTAR: #1", bg="#8E44AD", fg="white", font=("Arial", 9, "bold"), command=self.toggle_seestar_target)
+        self.btn_toggle_seestar.grid(row=0, column=6, padx=4, pady=4, sticky="ew")
+        self.seestar_btn = self.btn_toggle_seestar
+
+        self.btn_popout = tk.Button(menu_frame, text="📺 SEESTAR POP", bg="#27AE60", fg="white", font=("Arial", 9, "bold"), command=self.open_seestar_popout)
+        self.btn_popout.grid(row=0, column=7, padx=4, pady=4, sticky="ew")
 
         self.net_lbl = tk.Label(menu_frame, text="NET: CHECKING...", font=("Arial", 9, "bold"), bg="#0a0a0a", fg="cyan")
-        self.net_lbl.grid(row=0, column=8, padx=4, pady=4, sticky="e")
+        self.net_lbl.grid(row=0, column=9, padx=4, pady=4, sticky="e")
         
         self.left_workspace = tk.Frame(self.root, bg="black")
         self.left_workspace.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
@@ -708,17 +1035,17 @@ class SumnerHUD:
         
         self.all_canvas = tk.Canvas(self.left_workspace, bg="#050505", highlightthickness=1, highlightbackground="#222")
         self.all_canvas.grid(row=1, column=0, padx=4, pady=4, sticky="nsew")
-        self.all_img_id = self.all_canvas.create_image(0, 0, anchor='nw')
+        self.all_img_id = self.all_canvas.create_image(0, 0, anchor='center')
         self.all_canvas.tag_bind(self.all_img_id, "<Button-1>", lambda e: self.popout(self.path_allsky))
         
         self.rad_canvas = tk.Canvas(self.left_workspace, bg="#050505", highlightthickness=1, highlightbackground="#222")
         self.rad_canvas.grid(row=1, column=1, padx=4, pady=4, sticky="nsew")
-        self.rad_img_id = self.rad_canvas.create_image(0, 0, anchor='nw')
+        self.rad_img_id = self.rad_canvas.create_image(0, 0, anchor='center')
         self.rad_canvas.tag_bind(self.rad_img_id, "<Button-1>", lambda e: self.popout(self.path_radar))
         
         self.clk_canvas = tk.Canvas(self.left_workspace, bg="#050505", highlightthickness=1, highlightbackground="#222")
-        self.clk_canvas.grid(row=2, column=0, columnspan=2, padx=4, pady=4, sticky="nsew")
-        self.clk_img_id = self.clk_canvas.create_image(0, 0, anchor='nw')
+        self.clk_canvas.grid(row=2, column=0, columnspan=2, padx=4, pady=(18, 4), sticky="nsew")
+        self.clk_img_id = self.clk_canvas.create_image(0, 0, anchor='center')
         self.clk_canvas.tag_bind(self.clk_img_id, "<Button-1>", lambda e: self.popout(self.path_clock))
         
         self.right_panel = tk.Frame(self.root, bg="#050505", bd=3, relief="ridge", highlightthickness=1, highlightbackground="#00FFCC")
@@ -742,7 +1069,6 @@ class SumnerHUD:
         self.val_dome = self.build_telemetry_row("🏠", "ROOF STAT:", "#EB984E", 9)
         self.val_alpaca = self.build_telemetry_row("🔭", "ALPACA LINK:", "#00FF00", 10)
         
-        # --- Focus Drift Telemetry ---
         self.val_drift = self.build_telemetry_row("🎯", "FOCUS DRIFT:", "#F1C40F", 11)
         
         timer_frame = tk.Frame(self.right_panel, bg="#050505")
