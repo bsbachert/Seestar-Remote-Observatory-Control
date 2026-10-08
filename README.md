@@ -11,7 +11,7 @@ This software provides a centralized "Heads Up Display" (HUD) and a background w
 🚀 Key Features
 Dual-MOSFET Control:
 Heater: PWM-driven proactive dew prevention using a 5°F safety buffer.
-Roof: Logic-level control for a 20" Linear Actuator to open/close the observatory roof via the HUD.
+Roof: Logic-level control for a Linear Actuator to open/close the observatory roof via the HUD.
 Remote Power Management: Integration with a SwitchBot to remotely trigger the Seestar S50's physical power button.
 Telescope Control: Use Seestar Apps Remote Telescope to control the telescope.
 Global Access: Fully compatible with Raspberry Pi Connect and VNC for real-time control from anywhere.
