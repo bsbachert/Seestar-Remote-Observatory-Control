@@ -1,5 +1,6 @@
 
-<img width="1918" height="926" alt="Screenshot 2026-03-01 194741" src="https://github.com/user-attachments/assets/e9ecd347-c0c8-4405-b138-a200be36ab67" />
+<img width="1803" height="828" alt="image" src="https://github.com/user-attachments/assets/7094733c-ef4e-44da-9cb3-8c0a8a9a8ae0" />
+
 
 
 An integrated automation and monitoring suite for a remote Seestar S50 / S30 / S30 Pro observatory, powered by a Raspberry Pi 5 (4GB). This system manages everything from proactive dew prevention to structural roof automation, ensuring the telescope is protected and accessible from anywhere in the world.
