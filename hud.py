@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
 from PIL import Image, ImageTk, ImageDraw
-import os, subprocess, random, math, sys, fcntl, socket, time, json
+import os, subprocess, random, math, sys, fcntl, socket, time, json, glob
 import smtplib
 import requests
 import webbrowser
@@ -133,6 +133,7 @@ class SumnerHUD:
         self.path_thresh = "/home/pi/allsky_guard/cloud_threshold.txt"
         self.path_seestar_ip = "/home/pi/allsky_guard/seestar_ip.txt"
         self.path_seestar_2_ip = "/home/pi/allsky_guard/seestar_2_ip.txt"
+        self.path_esp_ip = "/home/pi/allsky_guard/esp_ip.txt"
         self.path_fingerbot_mac = "/home/pi/allsky_guard/fingerbot_mac.txt"
         self.path_roof_cmd = "/home/pi/allsky_guard/roof_cmd.txt"
         self.path_radar_id = "/home/pi/allsky_guard/radar_coords.txt"
@@ -152,9 +153,10 @@ class SumnerHUD:
         self._cached_alpaca_status = False
         self._last_alpaca_check = 0
         
-        # Dual Seestar Configuration State
+        # Dual Seestar & ESP Cam Configuration State
         self.seestar_ip = "0.0.0.0"
         self.seestar_2_ip = "0.0.0.0"
+        self.esp_ip = "0.0.0.0"
         self.active_seestar_index = 1  # 1 or 2
         self.seestar_1_frame_path = None
         self.seestar_2_frame_path = None
@@ -187,6 +189,12 @@ class SumnerHUD:
             try:
                 with open(self.path_seestar_2_ip, "r") as f:
                     self.seestar_2_ip = f.read().strip()
+            except: pass
+
+        if os.path.exists(self.path_esp_ip):
+            try:
+                with open(self.path_esp_ip, "r") as f:
+                    self.esp_ip = f.read().strip()
             except: pass
 
         self.root.grid_rowconfigure(0, weight=1)
@@ -266,25 +274,126 @@ class SumnerHUD:
         asyncio.run(run())
 
     def open_seestar_cam(self):
+        """Pops out a live window streaming video from the ESP32 monitor camera."""
         pop = tk.Toplevel(self.root)
         pop.title("Seestar Monitor Camera")
-        pop.geometry(f"{int(self.sw * 0.45)}x{int(self.sh * 0.5)}")
+        pop.geometry(f"{int(self.sw * 0.55)}x{int(self.sh * 0.65)}")
         pop.config(bg='black')
         pop.attributes("-topmost", True)
         
-        active_target_ip = self.seestar_ip if self.active_seestar_index == 1 else self.seestar_2_ip
-        tk.Label(pop, text=f"SEESTAR #{self.active_seestar_index} MONITOR (IP: {active_target_ip})", bg="black", fg="#D35400", font=("Arial", 12, "bold")).pack(pady=10)
+        target_ip = self.esp_ip.strip()
         
-        cam_view_lbl = tk.Label(pop, text=f"Target IP: {active_target_ip}\n(Will bind to http://{active_target_ip}/stream)", bg="#111", fg="white", font=("Courier", 10))
-        cam_view_lbl.pack(expand=True, fill="both", padx=15, pady=15)
+        header_lbl = tk.Label(
+            pop, 
+            text=f"ESP32-CAM MONITOR STREAM ({target_ip})", 
+            bg="black", 
+            fg="#00FF55", 
+            font=("Arial", 12, "bold")
+        )
+        header_lbl.pack(pady=5)
         
-        tk.Button(pop, text="CLOSE", command=pop.destroy, bg="#500", fg="white", font=("Arial", 9, "bold")).pack(side="bottom", pady=10)
+        status_lbl = tk.Label(
+            pop, 
+            text="Connecting to ESP32-CAM stream...", 
+            bg="black", 
+            fg="yellow", 
+            font=("Courier", 10)
+        )
+        status_lbl.pack(pady=2)
+
+        cam_view_lbl = tk.Label(pop, bg="#111")
+        cam_view_lbl.pack(expand=True, fill="both", padx=10, pady=5)
+        
+        state = {"running": True, "frame": None, "status": "Connecting..."}
+
+        def stream_worker():
+            if not target_ip or target_ip == "0.0.0.0":
+                state["status"] = "Error: Invalid ESP32 IP configured in Dossier"
+                return
+
+            urls_to_try = []
+            if target_ip.startswith("http://") or target_ip.startswith("https://"):
+                urls_to_try.append(target_ip)
+            else:
+                urls_to_try.append(f"http://{target_ip}:81/stream")
+                urls_to_try.append(f"http://{target_ip}/stream")
+                urls_to_try.append(f"http://{target_ip}/")
+
+            cap = None
+            connected_url = None
+
+            for url in urls_to_try:
+                if not state["running"]:
+                    return
+                state["status"] = f"Connecting to {url}..."
+                test_cap = cv2.VideoCapture(url)
+                if test_cap.isOpened():
+                    ret, frame = test_cap.read()
+                    if ret and frame is not None:
+                        cap = test_cap
+                        connected_url = url
+                        break
+                    else:
+                        test_cap.release()
+
+            if cap is None or not cap.isOpened():
+                state["status"] = f"Failed to connect to ESP32 camera at {target_ip}"
+                return
+
+            state["status"] = f"LIVE STREAM: {connected_url}"
+
+            while state["running"]:
+                ret, frame = cap.read()
+                if not ret or frame is None:
+                    state["status"] = "Stream lost. Reconnecting..."
+                    time.sleep(1)
+                    continue
+
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                state["frame"] = frame_rgb
+                time.sleep(0.03)
+
+            cap.release()
+
+        threading.Thread(target=stream_worker, daemon=True).start()
+
+        def update_video_feed():
+            if not pop.winfo_exists():
+                state["running"] = False
+                return
+
+            status_lbl.config(
+                text=state["status"], 
+                fg="#00FF00" if "LIVE" in state["status"] else ("red" if "Failed" in state["status"] or "Error" in state["status"] else "yellow")
+            )
+
+            if state["frame"] is not None:
+                try:
+                    img = Image.fromarray(state["frame"])
+                    win_w = max(cam_view_lbl.winfo_width(), 320)
+                    win_h = max(cam_view_lbl.winfo_height(), 240)
+                    img.thumbnail((win_w, win_h), Image.Resampling.LANCZOS)
+
+                    photo = ImageTk.PhotoImage(img)
+                    cam_view_lbl.config(image=photo)
+                    cam_view_lbl.image = photo
+                except Exception:
+                    pass
+
+            pop.after(30, update_video_feed)
+
+        def on_close():
+            state["running"] = False
+            pop.destroy()
+
+        pop.protocol("WM_DELETE_WINDOW", on_close)
+        tk.Button(pop, text="CLOSE", command=on_close, bg="#500", fg="white", font=("Arial", 9, "bold")).pack(side="bottom", pady=5)
+        update_video_feed()
 
     def toggle_seestar_target(self, event=None):
         """Toggles active target between Seestar 1 and Seestar 2 and forces cache refresh."""
         self.active_seestar_index = 2 if getattr(self, "active_seestar_index", 1) == 1 else 1
         
-        # Invalidate display cache for immediate UI update
         if hasattr(self, "_seestar_cache"):
             delattr(self, "_seestar_cache")
             
@@ -309,7 +418,6 @@ class SumnerHUD:
 
         status_var = tk.StringVar(value="Connecting to event socket...")
         
-        # Status Overlay Header
         status_label = tk.Label(
             popout,
             textvariable=status_var,
@@ -323,7 +431,6 @@ class SumnerHUD:
         )
         status_label.pack(fill=tk.X)
 
-        # Image Frame Canvas
         img_label = tk.Label(popout, bg="black")
         img_label.pack(fill=tk.BOTH, expand=True)
 
@@ -375,7 +482,6 @@ class SumnerHUD:
                 telemetry["running"] = False
                 return
 
-            # Update live text banner
             status_text = (
                 f"STATUS: {telemetry['state'].upper()} | "
                 f"STACKED: {telemetry['stacked']}/{telemetry['total']} | "
@@ -384,7 +490,6 @@ class SumnerHUD:
             )
             status_var.set(status_text)
 
-            # Update latest image from Samba directory
             latest_path = getattr(self, f"seestar_{self.active_seestar_index}_frame_path", None)
             if latest_path and os.path.exists(latest_path):
                 try:
@@ -434,13 +539,17 @@ class SumnerHUD:
         current_text = self.btn_dew.cget("text")
         if "AUTO" in current_text:
             self.btn_dew.config(text="DEW HTR: ON", bg="#900")
-            with open(self.path_dew_cmd, "w") as f: f.write("ON")
+            with open(self.path_dew_cmd, "w") as f:
+                f.write("ON")
         elif "ON" in current_text:
             self.btn_dew.config(text="DEW HTR: OFF", bg="#444")
-            with open(self.path_dew_cmd, "w") as f: f.write("OFF")
+            with open(self.path_dew_cmd, "w") as f:
+                f.write("OFF")
         else:
             self.btn_dew.config(text="DEW HTR: AUTO", bg="#333")
-            with open(self.path_dew_cmd, "w") as f: f.write("AUTO")
+            if self.btn_dew and "AUTO" in self.btn_dew.cget("text"):
+                with open(self.path_dew_cmd, "w") as f:
+                    f.write("AUTO")
 
     def send_email_notification(self, subject, body):
         try:
@@ -576,7 +685,6 @@ class SumnerHUD:
         return ImageTk.PhotoImage(img)
 
     def load_scale(self, path, w, h, label, cache_attr):
-        """Optimized with caching to avoid redundant disk I/O and PIL resizing every second."""
         if w <= 10 or h <= 10: w, h = 100, 100
         if not os.path.exists(path) or os.path.getsize(path) < 100:
             return self.create_placeholder(f"SET {label} ID\nIN DOSSIER", w, h)
@@ -609,7 +717,6 @@ class SumnerHUD:
             except: pass
 
     def check_alpaca_status(self):
-        """Checks if the Seestar native API port (4700) is online, cached every 10s to prevent GUI lag."""
         now_ts = time.time()
         if now_ts - self._last_alpaca_check < 10:
             return self._cached_alpaca_status
@@ -628,15 +735,9 @@ class SumnerHUD:
             return False
 
     def fetch_seestar_frame(self):
-        """Fetches the absolute latest live JPG (stacked or sub-frame) from the active Seestar SMB share."""
-        import glob
-        import shutil
-        import os
-
         idx = getattr(self, "active_seestar_index", 1)
         mount_dir = "/mnt/seestar" if idx == 1 else f"/mnt/seestar{idx}"
 
-        # Auto-mount check prior to frame scan
         self.ensure_mounted(mount_dir)
 
         out_path = f"/home/pi/allsky_guard/ref/latest_seestar_{idx}.jpg"
@@ -647,17 +748,14 @@ class SumnerHUD:
                 mtime = os.path.getmtime(filepath)
             except Exception:
                 mtime = 0
-            # Combine mtime with filename string so chronological timestamps win tie-breaks
             return (mtime, os.path.basename(filepath))
 
         try:
-            # Search all JPGs across the active unit mount
             all_jpgs = (
                 glob.glob(f"{mount_dir}/**/*.jpg", recursive=True) + 
                 glob.glob(f"{mount_dir}/**/*.JPG", recursive=True)
             )
             
-            # Exclude only thumbnail images (_thn.jpg); include active live subframes and stacks
             valid_jpgs = [
                 f for f in all_jpgs 
                 if not f.lower().endswith("_thn.jpg")
@@ -667,7 +765,6 @@ class SumnerHUD:
                 latest_jpg = max(valid_jpgs, key=get_file_key)
                 shutil.copy(latest_jpg, out_path)
                 
-                # Invalidate image cache so Tkinter forces an immediate refresh on screen
                 if hasattr(self, "_seestar_cache"):
                     delattr(self, "_seestar_cache")
                     
@@ -675,7 +772,6 @@ class SumnerHUD:
         except Exception as e:
             print(f"[HUD] Seestar frame fetch error on {mount_dir}: {e}")
 
-        # Re-check every 10 seconds to limit Samba bandwidth
         self.root.after(10000, self.fetch_seestar_frame)
 
     def show_weather_history(self):
@@ -770,6 +866,7 @@ class SumnerHUD:
         tk.Label(d_win, text="SYSTEM DOSSIER", bg="#050505", fg="#FFCC00", font=("Arial", 18, "bold")).grid(row=0, column=0, pady=10)
         entry_frame = tk.Frame(d_win, bg="#050505")
         entry_frame.grid(row=1, column=0, sticky="ew", padx=20)
+        
         def create_entry(label_text, path, color="cyan"):
             f = tk.Frame(entry_frame, bg="#111")
             f.pack(fill="x", pady=2)
@@ -779,30 +876,37 @@ class SumnerHUD:
             if os.path.exists(path):
                 with open(path, "r") as file: e.insert(0, file.read().strip())
             return e
+            
         rad_entry = create_entry("Radar Station:", self.path_radar_id, "orange")
         csk_entry = create_entry("ClearSky ID:", self.path_csk_id, "#00FFCC")
         ip_entry  = create_entry("Seestar #1 IP:", self.path_seestar_ip, "#FF33FF")
         ip2_entry = create_entry("Seestar #2 IP:", self.path_seestar_2_ip, "#FF99FF")
+        esp_entry = create_entry("ESP Cam IP:", self.path_esp_ip, "#00FF55")
         bt_entry  = create_entry("Fingerbot MAC:", self.path_fingerbot_mac, "#FFCC00")
         mail_entry = create_entry("Alert Email:", self.path_email, "lightgreen")
+        
         txt = scrolledtext.ScrolledText(d_win, bg="black", fg="#00FFCC", font=("Courier", 14), insertbackground="white")
         txt.grid(row=2, column=0, sticky="nsew", padx=20, pady=5)
         if os.path.exists(self.path_notes):
             with open(self.path_notes, "r") as f: txt.insert('1.0', f.read())
+            
         def save_all():
             with open(self.path_radar_id, "w") as f: f.write(rad_entry.get().upper().strip())
             with open(self.path_csk_id, "w") as f: f.write(csk_entry.get().strip())
             with open(self.path_seestar_ip, "w") as f: f.write(ip_entry.get().strip())
             with open(self.path_seestar_2_ip, "w") as f: f.write(ip2_entry.get().strip())
+            with open(self.path_esp_ip, "w") as f: f.write(esp_entry.get().strip())
             with open(self.path_fingerbot_mac, "w") as f: f.write(bt_entry.get().strip())
             with open(self.path_email, "w") as f: f.write(mail_entry.get().strip())
             with open(self.path_notes, 'w') as f: f.write(txt.get('1.0', 'end'))
             with open(self.path_thresh, 'w') as f: f.write(str(radius_slider.get()))
             self.seestar_ip = ip_entry.get().strip()
             self.seestar_2_ip = ip2_entry.get().strip()
+            self.esp_ip = esp_entry.get().strip()
             self.email_receiver = mail_entry.get().strip()
             self.ai_radius_pct = radius_slider.get()
             d_win.destroy()
+            
         def reset_hrs():
             if messagebox.askyesno("RESET", "Reset Timer to 0?"):
                 with open(self.path_hours, "w") as f: f.write("0.0")
@@ -847,7 +951,6 @@ class SumnerHUD:
             cw_clk = int(self.left_workspace.winfo_width()) - 15
             ch_clk = int(self.left_workspace.winfo_height() * 0.35) - 10
         
-        # Using cached image loader to eliminate redundant disk I/O and PIL resizing
         self.img_all = self.load_scale(self.path_allsky, cw_all, ch_all, "AllSky", "_cache_allsky")
         self.all_canvas.coords(self.all_img_id, cw_all // 2, ch_all // 2)
         self.all_canvas.itemconfig(self.all_img_id, image=self.img_all, anchor='center')
@@ -953,7 +1056,7 @@ class SumnerHUD:
                 
                 if self.btn_dew and "AUTO" in self.btn_dew.cget("text"):
                     with open(self.path_dew_cmd, "w") as f:
-                        f.write("ON" if extreme_dew else "OFF")
+                        f.write("AUTO")
                         
                 ai_safe = ("CLEAR" in self.ai_sky_status or "INITIALIZING" in self.ai_sky_status)
                 

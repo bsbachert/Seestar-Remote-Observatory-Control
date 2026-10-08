@@ -7,6 +7,7 @@ DEW_HEATER_PIN = 12
 USB_PORT = "/dev/ttyUSB0" 
 PATH_SENSORS = "/home/pi/allsky_guard/sensors.txt"
 PATH_HOURS = "/home/pi/allsky_guard/hours.txt"
+PATH_DEW_CMD = "/home/pi/allsky_guard/dew_cmd.txt"
 
 # --- GPIO SETUP ---
 GPIO.setmode(GPIO.BCM)
@@ -21,6 +22,7 @@ latest_humidity = None
 latest_pressure = "--"
 latest_wind_speed = 0.0
 latest_rain_state = "DRY"
+ser = None
 
 def connect_serial():
     try:
@@ -32,7 +34,7 @@ def connect_serial():
     except: return None
 
 def arduino_reader():
-    global latest_wind_dir, latest_wind_speed, latest_amb_temp, latest_humidity, latest_pressure, latest_rain_state
+    global latest_wind_dir, latest_wind_speed, latest_amb_temp, latest_humidity, latest_pressure, latest_rain_state, ser
     ser = connect_serial()
     while True:
         if ser and ser.is_open:
@@ -52,7 +54,8 @@ def arduino_reader():
                             if 'HUM' in data: latest_humidity = float(data.get('HUM'))
                             if 'WIND' in data: latest_wind_speed = float(data.get('WIND'))
                         except: pass
-            except: ser = None
+            except: 
+                ser = None
         else:
             time.sleep(5)
             ser = connect_serial()
@@ -69,18 +72,49 @@ while True:
     speed = latest_wind_speed
     is_wet = (latest_rain_state == "WET")
     
-    # --- Dew Heater Logic ---
+    # --- Read Dew Command from HUD ---
+    dew_cmd = "AUTO"
+    if os.path.exists(PATH_DEW_CMD):
+        try:
+            with open(PATH_DEW_CMD, "r") as f:
+                dew_cmd = f.read().strip().upper()
+        except: pass
+
     heater_status = "OFF"
+    heater_on = False
+    
+    dew_f = None
     if amb_f and hum_val:
         try:
             T = (amb_f - 32) * 5/9
             gamma = (math.log(hum_val/100) + ((17.27 * T) / (237.3 + T)))
             dew_f = ((237.3 * gamma) / (17.27 - gamma) * 9/5) + 32
-            if (amb_f - dew_f) <= 15.0:
-                GPIO.output(DEW_HEATER_PIN, GPIO.HIGH)
-                heater_status = "ON (DEW RISK)"
-            else:
-                GPIO.output(DEW_HEATER_PIN, GPIO.LOW)
+        except: pass
+
+    extreme_dew = (amb_f - dew_f) <= 15.0 if (amb_f and dew_f) else False
+
+    # Determine Heater State based on HUD command
+    if dew_cmd == "ON":
+        heater_on = True
+        heater_status = "ON (Manual)"
+    elif dew_cmd == "OFF":
+        heater_on = False
+        heater_status = "OFF (Manual)"
+    else:  # AUTO mode
+        if extreme_dew:
+            heater_on = True
+            heater_status = "ON (AUTO - Dew Risk)"
+        else:
+            heater_on = False
+            heater_status = "OFF (AUTO - Safe)"
+
+    # --- ACTUALLY DRIVE THE MOSFET PIN ---
+    GPIO.output(DEW_HEATER_PIN, GPIO.HIGH if heater_on else GPIO.LOW)
+
+    # Optional serial transmission to Arduino
+    if ser and ser.is_open:
+        try:
+            ser.write(b"HEATER:ON\n" if heater_on else b"HEATER:OFF\n")
         except: pass
 
     # --- Roof Safety Logic ---
