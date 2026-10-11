@@ -892,3 +892,263 @@
 2026-10-07 19:33:22 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0
 2026-10-07 19:48:23 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0
 2026-10-07 20:34:15 | Amb:56.8 | Hum:77 | Wind:0.0 | Pres:29.07 | Drift:0.0
+2026-10-07 21:15:26 | Amb:56.9 | Hum:87 | Wind:0.0 | Pres:29.08 | Drift:0.0
+2026-10-07 21:30:49 | Amb:57.1 | Hum:88 | Wind:0.0 | Pres:29.08 | Drift:0.2
+2026-10-07 21:45:52 | Amb:57.0 | Hum:88 | Wind:0.0 | Pres:29.09 | Drift:0.1
+2026-10-07 22:00:54 | Amb:57.2 | Hum:86 | Wind:0.0 | Pres:29.09 | Drift:0.3
+2026-10-07 22:16:00 | Amb:57.1 | Hum:86 | Wind:0.0 | Pres:29.09 | Drift:0.2
+2026-10-07 22:31:13 | Amb:57.6 | Hum:85 | Wind:0.0 | Pres:29.09 | Drift:0.7
+2026-10-07 22:46:24 | Amb:57.0 | Hum:86 | Wind:0.0 | Pres:29.09 | Drift:0.1
+2026-10-07 22:57:08 | Amb:57.5 | Hum:86 | Wind:0.0 | Pres:29.10 | Drift:0.0
+2026-10-07 23:12:10 | Amb:57.1 | Hum:87 | Wind:0.0 | Pres:29.10 | Drift:0.4
+2026-10-07 23:27:12 | Amb:56.4 | Hum:89 | Wind:0.0 | Pres:29.11 | Drift:1.1
+2026-10-07 23:42:12 | Amb:56.2 | Hum:90 | Wind:0.0 | Pres:29.11 | Drift:1.3
+2026-10-07 23:57:15 | Amb:56.0 | Hum:92 | Wind:0.0 | Pres:29.11 | Drift:1.5
+2026-10-08 00:12:18 | Amb:55.8 | Hum:92 | Wind:0.0 | Pres:29.12 | Drift:1.7
+2026-10-08 00:27:20 | Amb:55.5 | Hum:93 | Wind:0.0 | Pres:29.12 | Drift:2.0
+2026-10-08 00:42:23 | Amb:54.5 | Hum:97 | Wind:0.0 | Pres:29.12 | Drift:3.0
+2026-10-08 00:57:25 | Amb:52.8 | Hum:100 | Wind:0.0 | Pres:29.13 | Drift:4.7
+2026-10-08 01:12:26 | Amb:52.6 | Hum:100 | Wind:0.0 | Pres:29.12 | Drift:4.9
+2026-10-08 01:27:28 | Amb:52.1 | Hum:100 | Wind:0.0 | Pres:29.13 | Drift:5.4
+2026-10-08 01:42:53 | Amb:51.3 | Hum:100 | Wind:0.0 | Pres:29.13 | Drift:6.2
+2026-10-08 01:57:56 | Amb:50.7 | Hum:100 | Wind:0.0 | Pres:29.14 | Drift:6.8
+2026-10-08 02:12:56 | Amb:51.1 | Hum:100 | Wind:0.0 | Pres:29.14 | Drift:6.4
+2026-10-08 02:27:58 | Amb:50.5 | Hum:100 | Wind:0.0 | Pres:29.15 | Drift:7.0
+2026-10-08 02:42:59 | Amb:50.2 | Hum:100 | Wind:0.0 | Pres:29.15 | Drift:7.3
+2026-10-08 02:58:01 | Amb:49.9 | Hum:100 | Wind:0.0 | Pres:29.15 | Drift:7.6
+2026-10-08 03:13:04 | Amb:49.2 | Hum:100 | Wind:0.0 | Pres:29.16 | Drift:8.3
+2026-10-08 03:28:05 | Amb:49.1 | Hum:100 | Wind:0.0 | Pres:29.16 | Drift:8.4
+2026-10-08 03:43:07 | Amb:49.4 | Hum:100 | Wind:0.0 | Pres:29.16 | Drift:8.1
+2026-10-08 03:58:08 | Amb:49.4 | Hum:100 | Wind:0.0 | Pres:29.16 | Drift:8.1
+2026-10-08 04:13:11 | Amb:48.8 | Hum:100 | Wind:0.0 | Pres:29.17 | Drift:8.7
+2026-10-08 04:28:12 | Amb:48.1 | Hum:100 | Wind:0.0 | Pres:29.17 | Drift:9.4
+2026-10-08 04:43:15 | Amb:48.2 | Hum:100 | Wind:0.0 | Pres:29.18 | Drift:9.3
+2026-10-08 04:58:16 | Amb:48.1 | Hum:100 | Wind:0.0 | Pres:29.18 | Drift:9.4
+2026-10-08 05:13:18 | Amb:47.0 | Hum:100 | Wind:0.0 | Pres:29.18 | Drift:10.5
+2026-10-08 05:28:19 | Amb:47.5 | Hum:100 | Wind:0.0 | Pres:29.18 | Drift:10.0
+2026-10-08 05:43:20 | Amb:47.2 | Hum:100 | Wind:0.0 | Pres:29.19 | Drift:10.3
+2026-10-08 05:58:22 | Amb:47.5 | Hum:100 | Wind:0.0 | Pres:29.19 | Drift:10.0
+2026-10-08 06:13:46 | Amb:47.7 | Hum:100 | Wind:0.0 | Pres:29.19 | Drift:9.8
+2026-10-08 06:29:07 | Amb:47.4 | Hum:100 | Wind:0.0 | Pres:29.20 | Drift:10.1
+2026-10-08 06:44:27 | Amb:47.9 | Hum:100 | Wind:0.0 | Pres:29.21 | Drift:9.6
+2026-10-08 06:59:48 | Amb:47.7 | Hum:100 | Wind:0.0 | Pres:29.21 | Drift:9.8
+2026-10-08 07:15:09 | Amb:47.8 | Hum:100 | Wind:0.0 | Pres:29.22 | Drift:9.7
+2026-10-08 07:30:13 | Amb:47.5 | Hum:100 | Wind:0.0 | Pres:29.22 | Drift:10.0
+2026-10-08 07:45:25 | Amb:48.1 | Hum:100 | Wind:0.0 | Pres:29.23 | Drift:9.4
+2026-10-08 08:00:36 | Amb:48.0 | Hum:100 | Wind:0.0 | Pres:29.23 | Drift:9.5
+2026-10-08 08:15:47 | Amb:49.3 | Hum:100 | Wind:0.0 | Pres:29.24 | Drift:8.2
+2026-10-08 08:30:58 | Amb:53.1 | Hum:100 | Wind:0.0 | Pres:29.25 | Drift:4.4
+2026-10-08 08:46:09 | Amb:66.0 | Hum:64 | Wind:0.0 | Pres:29.25 | Drift:8.5
+2026-10-08 09:01:20 | Amb:67.5 | Hum:56 | Wind:0.0 | Pres:29.26 | Drift:10.0
+2026-10-08 09:16:32 | Amb:64.9 | Hum:61 | Wind:0.0 | Pres:29.27 | Drift:7.4
+2026-10-08 09:31:43 | Amb:64.0 | Hum:64 | Wind:0.0 | Pres:29.27 | Drift:6.5
+2026-10-08 09:46:54 | Amb:66.1 | Hum:60 | Wind:0.0 | Pres:29.28 | Drift:8.6
+2026-10-08 10:02:05 | Amb:66.9 | Hum:60 | Wind:0.0 | Pres:29.28 | Drift:9.4
+2026-10-08 10:17:16 | Amb:70.1 | Hum:53 | Wind:0.0 | Pres:29.28 | Drift:12.6
+2026-10-08 10:32:27 | Amb:69.8 | Hum:53 | Wind:0.0 | Pres:29.29 | Drift:12.3
+2026-10-08 10:47:39 | Amb:69.6 | Hum:52 | Wind:0.0 | Pres:29.29 | Drift:12.1
+2026-10-08 11:02:50 | Amb:69.1 | Hum:49 | Wind:0.0 | Pres:29.29 | Drift:11.6
+2026-10-08 11:18:01 | Amb:71.2 | Hum:45 | Wind:0.0 | Pres:29.29 | Drift:13.7
+2026-10-08 11:33:12 | Amb:71.7 | Hum:42 | Wind:0.0 | Pres:29.29 | Drift:14.2
+2026-10-08 11:48:24 | Amb:72.8 | Hum:43 | Wind:0.0 | Pres:29.29 | Drift:15.3
+2026-10-08 12:03:35 | Amb:72.2 | Hum:39 | Wind:0.0 | Pres:29.30 | Drift:14.7
+2026-10-08 12:18:46 | Amb:72.3 | Hum:37 | Wind:0.0 | Pres:29.30 | Drift:14.8
+2026-10-08 12:33:57 | Amb:72.5 | Hum:34 | Wind:0.0 | Pres:29.30 | Drift:15.0
+2026-10-08 12:49:09 | Amb:72.6 | Hum:32 | Wind:0.0 | Pres:29.31 | Drift:15.1
+2026-10-08 13:04:20 | Amb:73.1 | Hum:35 | Wind:0.0 | Pres:29.31 | Drift:15.6
+2026-10-08 13:19:31 | Amb:71.9 | Hum:33 | Wind:0.0 | Pres:29.31 | Drift:14.4
+2026-10-08 13:34:42 | Amb:72.5 | Hum:34 | Wind:0.0 | Pres:29.31 | Drift:15.0
+2026-10-08 13:49:54 | Amb:73.0 | Hum:32 | Wind:0.0 | Pres:29.30 | Drift:15.5
+2026-10-08 14:05:05 | Amb:71.7 | Hum:31 | Wind:0.0 | Pres:29.30 | Drift:14.2
+2026-10-08 14:20:16 | Amb:70.5 | Hum:32 | Wind:0.0 | Pres:29.30 | Drift:13.0
+2026-10-08 14:35:27 | Amb:69.2 | Hum:32 | Wind:0.0 | Pres:29.30 | Drift:11.7
+2026-10-08 14:50:39 | Amb:70.0 | Hum:33 | Wind:0.0 | Pres:29.30 | Drift:12.5
+2026-10-08 15:05:50 | Amb:68.5 | Hum:33 | Wind:0.0 | Pres:29.30 | Drift:11.0
+2026-10-08 15:21:01 | Amb:67.5 | Hum:35 | Wind:0.0 | Pres:29.29 | Drift:10.0
+2026-10-08 15:36:12 | Amb:65.7 | Hum:37 | Wind:0.0 | Pres:29.29 | Drift:8.2
+2026-10-08 15:51:23 | Amb:64.8 | Hum:36 | Wind:0.0 | Pres:29.29 | Drift:7.3
+2026-10-08 16:06:35 | Amb:64.5 | Hum:36 | Wind:0.0 | Pres:29.30 | Drift:7.0
+2026-10-08 16:21:46 | Amb:64.0 | Hum:36 | Wind:0.0 | Pres:29.30 | Drift:6.5
+2026-10-08 16:36:57 | Amb:63.9 | Hum:37 | Wind:0.0 | Pres:29.30 | Drift:6.4
+2026-10-08 16:52:08 | Amb:63.7 | Hum:37 | Wind:0.0 | Pres:29.30 | Drift:6.2
+2026-10-08 17:07:19 | Amb:63.0 | Hum:37 | Wind:0.0 | Pres:29.30 | Drift:5.5
+2026-10-08 17:22:31 | Amb:62.9 | Hum:38 | Wind:0.0 | Pres:29.30 | Drift:5.4
+2026-10-08 17:37:42 | Amb:62.5 | Hum:38 | Wind:0.0 | Pres:29.30 | Drift:5.0
+2026-10-08 17:52:53 | Amb:61.9 | Hum:40 | Wind:0.0 | Pres:29.30 | Drift:4.4
+2026-10-08 18:08:05 | Amb:61.2 | Hum:41 | Wind:0.0 | Pres:29.31 | Drift:3.7
+2026-10-08 18:23:16 | Amb:60.2 | Hum:45 | Wind:0.0 | Pres:29.31 | Drift:2.7
+2026-10-08 18:38:27 | Amb:59.2 | Hum:48 | Wind:0.0 | Pres:29.31 | Drift:1.7
+2026-10-08 18:53:38 | Amb:57.6 | Hum:52 | Wind:0.0 | Pres:29.31 | Drift:0.1
+2026-10-08 19:08:49 | Amb:55.6 | Hum:57 | Wind:0.0 | Pres:29.31 | Drift:0.8
+2026-10-08 19:24:01 | Amb:54.1 | Hum:62 | Wind:0.0 | Pres:29.32 | Drift:0.7
+2026-10-08 19:39:12 | Amb:53.0 | Hum:64 | Wind:0.0 | Pres:29.32 | Drift:1.8
+2026-10-08 19:54:13 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:15.5
+2026-10-08 20:09:25 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:15.5
+2026-10-08 20:24:26 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:15.5
+2026-10-08 20:39:27 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:15.5
+2026-10-08 20:54:28 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:15.5
+2026-10-08 21:09:31 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:15.5
+2026-10-08 21:24:32 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:15.5
+2026-10-08 21:39:35 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0
+2026-10-08 21:56:17 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0
+2026-10-08 22:37:46 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-08 22:55:29 | Amb:48.0 | Hum:100 | Wind:0.0 | Pres:29.35 | Drift:0.0 | Sharp:0.0
+2026-10-08 23:10:46 | Amb:48.2 | Hum:100 | Wind:0.0 | Pres:29.35 | Drift:0.0 | Sharp:0.0
+2026-10-08 23:26:41 | Amb:48.4 | Hum:99 | Wind:0.0 | Pres:29.35 | Drift:0.2 | Sharp:487.8
+2026-10-08 23:41:52 | Amb:48.1 | Hum:98 | Wind:0.0 | Pres:29.35 | Drift:0.1 | Sharp:487.8
+2026-10-08 23:57:41 | Amb:47.7 | Hum:100 | Wind:0.0 | Pres:29.36 | Drift:0.5 | Sharp:487.8
+2026-10-09 00:13:29 | Amb:47.7 | Hum:100 | Wind:0.0 | Pres:29.36 | Drift:0.5 | Sharp:487.8
+2026-10-09 00:29:18 | Amb:47.6 | Hum:100 | Wind:0.0 | Pres:29.35 | Drift:0.6 | Sharp:487.8
+2026-10-09 00:45:17 | Amb:48.0 | Hum:100 | Wind:0.0 | Pres:29.35 | Drift:0.2 | Sharp:487.8
+2026-10-09 01:00:27 | Amb:48.3 | Hum:100 | Wind:0.0 | Pres:29.35 | Drift:0.1 | Sharp:487.8
+2026-10-09 01:16:16 | Amb:48.0 | Hum:100 | Wind:0.0 | Pres:29.36 | Drift:0.2 | Sharp:487.8
+2026-10-09 01:32:05 | Amb:47.9 | Hum:100 | Wind:0.0 | Pres:29.36 | Drift:0.3 | Sharp:487.8
+2026-10-09 01:47:55 | Amb:47.5 | Hum:100 | Wind:0.0 | Pres:29.37 | Drift:0.7 | Sharp:487.8
+2026-10-09 02:03:51 | Amb:47.7 | Hum:100 | Wind:0.0 | Pres:29.37 | Drift:0.5 | Sharp:487.8
+2026-10-09 02:19:01 | Amb:48.7 | Hum:100 | Wind:0.0 | Pres:29.36 | Drift:0.5 | Sharp:487.8
+2026-10-09 02:34:49 | Amb:48.4 | Hum:100 | Wind:0.0 | Pres:29.36 | Drift:0.2 | Sharp:487.8
+2026-10-09 02:50:35 | Amb:48.1 | Hum:100 | Wind:0.2 | Pres:29.37 | Drift:0.1 | Sharp:487.8
+2026-10-09 03:06:20 | Amb:47.7 | Hum:100 | Wind:0.0 | Pres:29.38 | Drift:0.5 | Sharp:487.8
+2026-10-09 03:22:11 | Amb:47.4 | Hum:100 | Wind:0.0 | Pres:29.38 | Drift:0.8 | Sharp:487.8
+2026-10-09 03:37:17 | Amb:47.1 | Hum:100 | Wind:0.0 | Pres:29.37 | Drift:1.1 | Sharp:487.8
+2026-10-09 03:52:59 | Amb:47.0 | Hum:100 | Wind:0.0 | Pres:29.37 | Drift:1.2 | Sharp:487.8
+2026-10-09 04:08:41 | Amb:46.4 | Hum:100 | Wind:0.0 | Pres:29.37 | Drift:1.8 | Sharp:487.8
+2026-10-09 04:24:23 | Amb:46.6 | Hum:100 | Wind:0.0 | Pres:29.37 | Drift:1.6 | Sharp:487.8
+2026-10-09 04:40:12 | Amb:47.2 | Hum:100 | Wind:0.0 | Pres:29.37 | Drift:1.0 | Sharp:487.8
+2026-10-09 04:55:17 | Amb:46.4 | Hum:100 | Wind:0.0 | Pres:29.38 | Drift:1.8 | Sharp:487.8
+2026-10-09 05:11:00 | Amb:45.7 | Hum:100 | Wind:0.0 | Pres:29.37 | Drift:2.5 | Sharp:487.8
+2026-10-09 05:26:44 | Amb:46.2 | Hum:100 | Wind:0.0 | Pres:29.38 | Drift:2.0 | Sharp:487.8
+2026-10-09 05:42:28 | Amb:46.1 | Hum:100 | Wind:0.0 | Pres:29.38 | Drift:2.1 | Sharp:487.8
+2026-10-09 05:58:22 | Amb:46.3 | Hum:100 | Wind:0.0 | Pres:29.38 | Drift:1.9 | Sharp:487.8
+2026-10-09 06:13:53 | Amb:45.9 | Hum:100 | Wind:0.0 | Pres:29.38 | Drift:2.3 | Sharp:487.8
+2026-10-09 06:29:25 | Amb:46.5 | Hum:100 | Wind:0.0 | Pres:29.38 | Drift:1.7 | Sharp:487.8
+2026-10-09 06:44:56 | Amb:46.4 | Hum:100 | Wind:0.0 | Pres:29.39 | Drift:1.8 | Sharp:487.8
+2026-10-09 07:00:28 | Amb:46.1 | Hum:100 | Wind:0.0 | Pres:29.39 | Drift:2.1 | Sharp:487.8
+2026-10-09 07:16:01 | Amb:46.5 | Hum:100 | Wind:0.0 | Pres:29.40 | Drift:1.7 | Sharp:487.8
+2026-10-09 07:31:18 | Amb:46.8 | Hum:100 | Wind:0.0 | Pres:29.40 | Drift:1.4 | Sharp:487.8
+2026-10-09 07:46:36 | Amb:46.6 | Hum:100 | Wind:0.0 | Pres:29.41 | Drift:1.6 | Sharp:487.8
+2026-10-09 08:01:53 | Amb:47.7 | Hum:97 | Wind:0.0 | Pres:29.41 | Drift:0.5 | Sharp:487.8
+2026-10-09 08:17:11 | Amb:48.3 | Hum:95 | Wind:0.0 | Pres:29.41 | Drift:0.1 | Sharp:487.8
+2026-10-09 08:32:29 | Amb:51.8 | Hum:86 | Wind:0.0 | Pres:29.41 | Drift:3.6 | Sharp:487.8
+2026-10-09 08:47:47 | Amb:53.5 | Hum:79 | Wind:0.0 | Pres:29.42 | Drift:5.3 | Sharp:487.8
+2026-10-09 09:03:04 | Amb:55.3 | Hum:74 | Wind:0.0 | Pres:29.42 | Drift:7.1 | Sharp:487.8
+2026-10-09 09:18:22 | Amb:57.4 | Hum:68 | Wind:0.0 | Pres:29.43 | Drift:9.2 | Sharp:487.8
+2026-10-09 09:33:40 | Amb:59.3 | Hum:66 | Wind:0.0 | Pres:29.43 | Drift:11.1 | Sharp:487.8
+2026-10-09 09:48:58 | Amb:62.4 | Hum:57 | Wind:0.0 | Pres:29.43 | Drift:14.2 | Sharp:487.8
+2026-10-09 10:04:15 | Amb:65.6 | Hum:52 | Wind:0.0 | Pres:29.44 | Drift:17.4 | Sharp:487.8
+2026-10-09 10:19:33 | Amb:66.9 | Hum:49 | Wind:0.0 | Pres:29.45 | Drift:18.7 | Sharp:487.8
+2026-10-09 10:34:51 | Amb:70.0 | Hum:44 | Wind:0.0 | Pres:29.45 | Drift:21.8 | Sharp:487.8
+2026-10-09 10:50:09 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 11:05:26 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 11:20:44 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 11:36:02 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 11:51:20 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 12:06:37 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 12:21:55 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 12:37:13 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 12:52:31 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 13:07:48 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 13:23:06 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 13:38:24 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 13:53:42 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 14:09:00 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 14:24:17 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 14:39:35 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 14:54:53 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 15:10:11 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 15:25:28 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 15:40:46 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 15:56:04 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 16:11:22 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 16:26:39 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 16:41:57 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 16:57:15 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 17:12:33 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 17:27:50 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 17:43:08 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 17:58:26 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 18:13:44 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:22.1 | Sharp:487.8
+2026-10-09 18:28:46 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:19.3 | Sharp:487.8
+2026-10-09 18:43:46 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:19.3 | Sharp:487.8
+2026-10-09 18:48:16 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-09 21:58:54 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-09 22:13:56 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-09 22:28:58 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-09 22:44:01 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-09 22:59:06 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-09 23:14:09 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-09 23:29:13 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-09 23:44:15 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-09 23:59:17 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 00:14:21 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 00:29:26 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 00:44:29 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 00:59:31 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 01:14:56 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 01:30:01 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 01:45:02 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 02:00:02 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 02:15:04 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 02:30:09 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 02:45:09 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 03:00:14 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 03:15:18 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 03:30:20 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 03:45:25 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 04:00:27 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 04:15:30 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 04:30:33 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 04:45:34 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 05:00:39 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 05:15:39 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 05:30:43 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 05:45:46 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 06:00:48 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 06:16:11 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 06:31:32 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 06:46:54 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 07:02:16 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 07:17:37 | Amb:70.3 | Hum:84 | Wind:0.0 | Pres:19.86 | Drift:0.0 | Sharp:0.0
+2026-10-10 09:41:25 | Amb:64.1 | Hum:64 | Wind:0.0 | Pres:29.41 | Drift:0.0 | Sharp:0.0
+2026-10-10 09:56:27 | Amb:66.6 | Hum:57 | Wind:0.0 | Pres:29.42 | Drift:2.5 | Sharp:0.0
+2026-10-10 10:11:38 | Amb:68.6 | Hum:53 | Wind:0.0 | Pres:29.42 | Drift:4.5 | Sharp:0.0
+2026-10-10 10:26:49 | Amb:69.1 | Hum:51 | Wind:5.2 | Pres:29.42 | Drift:5.0 | Sharp:0.0
+2026-10-10 10:42:00 | Amb:70.3 | Hum:49 | Wind:0.0 | Pres:29.42 | Drift:6.2 | Sharp:0.0
+2026-10-10 10:57:12 | Amb:72.7 | Hum:46 | Wind:0.0 | Pres:29.42 | Drift:8.6 | Sharp:0.0
+2026-10-10 11:12:23 | Amb:75.0 | Hum:43 | Wind:0.0 | Pres:29.42 | Drift:10.9 | Sharp:0.0
+2026-10-10 11:27:34 | Amb:77.2 | Hum:40 | Wind:0.0 | Pres:29.42 | Drift:13.1 | Sharp:0.0
+2026-10-10 11:42:45 | Amb:79.0 | Hum:38 | Wind:0.0 | Pres:29.42 | Drift:14.9 | Sharp:0.0
+2026-10-10 11:57:56 | Amb:79.5 | Hum:36 | Wind:0.0 | Pres:29.42 | Drift:15.4 | Sharp:0.0
+2026-10-10 12:13:08 | Amb:79.7 | Hum:37 | Wind:0.0 | Pres:29.42 | Drift:15.6 | Sharp:0.0
+2026-10-10 12:28:19 | Amb:82.1 | Hum:33 | Wind:0.0 | Pres:29.42 | Drift:18.0 | Sharp:0.0
+2026-10-10 12:43:30 | Amb:82.7 | Hum:32 | Wind:0.0 | Pres:29.41 | Drift:18.6 | Sharp:0.0
+2026-10-10 12:58:41 | Amb:80.8 | Hum:32 | Wind:0.0 | Pres:29.41 | Drift:16.7 | Sharp:0.0
+2026-10-10 13:13:53 | Amb:83.0 | Hum:29 | Wind:0.0 | Pres:29.41 | Drift:18.9 | Sharp:0.0
+2026-10-10 13:29:04 | Amb:83.1 | Hum:29 | Wind:0.0 | Pres:29.40 | Drift:19.0 | Sharp:0.0
+2026-10-10 13:44:15 | Amb:82.3 | Hum:30 | Wind:0.0 | Pres:29.40 | Drift:18.2 | Sharp:0.0
+2026-10-10 13:59:26 | Amb:83.5 | Hum:28 | Wind:0.0 | Pres:29.40 | Drift:19.4 | Sharp:0.0
+2026-10-10 14:14:37 | Amb:83.0 | Hum:27 | Wind:0.0 | Pres:29.39 | Drift:18.9 | Sharp:0.0
+2026-10-10 14:29:48 | Amb:84.9 | Hum:27 | Wind:0.0 | Pres:29.39 | Drift:20.8 | Sharp:0.0
+2026-10-10 14:44:59 | Amb:81.9 | Hum:28 | Wind:0.0 | Pres:29.38 | Drift:17.8 | Sharp:0.0
+2026-10-10 15:00:10 | Amb:81.2 | Hum:27 | Wind:0.0 | Pres:29.38 | Drift:17.1 | Sharp:0.0
+2026-10-10 15:15:22 | Amb:81.2 | Hum:28 | Wind:0.0 | Pres:29.37 | Drift:17.1 | Sharp:0.0
+2026-10-10 15:30:33 | Amb:80.9 | Hum:29 | Wind:0.0 | Pres:29.37 | Drift:16.8 | Sharp:0.0
+2026-10-10 15:45:44 | Amb:80.4 | Hum:29 | Wind:0.0 | Pres:29.36 | Drift:16.3 | Sharp:0.0
+2026-10-10 16:00:55 | Amb:80.4 | Hum:29 | Wind:0.0 | Pres:29.36 | Drift:16.3 | Sharp:0.0
+2026-10-10 16:16:07 | Amb:80.1 | Hum:30 | Wind:1.2 | Pres:29.36 | Drift:16.0 | Sharp:0.0
+2026-10-10 16:31:18 | Amb:79.9 | Hum:31 | Wind:0.0 | Pres:29.36 | Drift:15.8 | Sharp:0.0
+2026-10-10 16:46:29 | Amb:78.8 | Hum:31 | Wind:1.2 | Pres:29.35 | Drift:14.7 | Sharp:0.0
+2026-10-10 17:01:40 | Amb:78.6 | Hum:32 | Wind:0.0 | Pres:29.35 | Drift:14.5 | Sharp:0.0
+2026-10-10 17:16:52 | Amb:78.5 | Hum:32 | Wind:0.0 | Pres:29.35 | Drift:14.4 | Sharp:0.0
+2026-10-10 17:32:03 | Amb:77.6 | Hum:32 | Wind:0.0 | Pres:29.35 | Drift:13.5 | Sharp:0.0
+2026-10-10 17:47:14 | Amb:77.2 | Hum:33 | Wind:0.0 | Pres:29.35 | Drift:13.1 | Sharp:0.0
+2026-10-10 18:02:25 | Amb:76.5 | Hum:35 | Wind:0.0 | Pres:29.35 | Drift:12.4 | Sharp:0.0
+2026-10-10 18:17:37 | Amb:75.2 | Hum:37 | Wind:0.0 | Pres:29.35 | Drift:11.1 | Sharp:0.0
+2026-10-10 18:32:48 | Amb:73.7 | Hum:40 | Wind:0.0 | Pres:29.35 | Drift:9.6 | Sharp:0.0
+2026-10-10 18:47:59 | Amb:72.2 | Hum:43 | Wind:0.0 | Pres:29.35 | Drift:8.1 | Sharp:0.0
+2026-10-10 19:03:10 | Amb:70.9 | Hum:46 | Wind:0.0 | Pres:29.35 | Drift:6.8 | Sharp:0.0
+2026-10-10 19:18:22 | Amb:70.0 | Hum:48 | Wind:0.0 | Pres:29.36 | Drift:5.9 | Sharp:0.0
+2026-10-10 19:33:33 | Amb:69.0 | Hum:50 | Wind:0.0 | Pres:29.36 | Drift:4.9 | Sharp:0.0
+2026-10-10 19:48:48 | Amb:68.9 | Hum:50 | Wind:0.0 | Pres:29.36 | Drift:4.8 | Sharp:0.0
+2026-10-10 20:03:55 | Amb:68.7 | Hum:50 | Wind:0.0 | Pres:29.36 | Drift:1.9 | Sharp:0.0
+2026-10-10 20:18:55 | Amb:68.6 | Hum:50 | Wind:0.0 | Pres:29.36 | Drift:1.8 | Sharp:0.0

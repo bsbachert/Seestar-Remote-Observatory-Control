@@ -46,15 +46,16 @@ case "$OS_FAMILY" in
         echo "📦 Updating Arch Linux package databases and installing dependencies..."
         sudo pacman -Sy --needed --noconfirm \
             python python-pip python-pillow python-tk \
-            i2c-tools bluez bluez-utils desktop-file-utils
+            i2c-tools bluez bluez-utils desktop-file-utils cifs-utils
         ;;
     debian)
-        echo "📦 Updating Debian/Ubuntu package lists and installing dependencies..."
+        echo "📦 Updating Debian/Raspberry Pi OS package lists and installing dependencies..."
         sudo apt-get update -y
         sudo apt-get install -y \
             python3-pip python3-venv python3-dev \
             python3-tk python3-pil python3-pil.imagetk \
-            i2c-tools bluetooth bluez desktop-file-utils
+            i2c-tools bluetooth bluez desktop-file-utils \
+            cifs-utils libgl1-mesa-glx libglib2.0-0 python3-opencv
         ;;
     *)
         echo "❌ Unsupported OS family detected. Please install dependencies manually."
@@ -68,22 +69,33 @@ if [ -f /etc/bluetooth/main.conf ]; then
     sudo sed -i -E 's/^[# ]*AutoEnable\s*=\s*.*/AutoEnable=true/' /etc/bluetooth/main.conf
 fi
 
-# 4. Set up Python Virtual Environment (venv)
-echo "🐍 Setting up Python venv at $VENV_DIR..."
+# 4. Create Mount Points & Required Directories
+echo "📁 Setting up system mount points and directory structure..."
+sudo mkdir -p /mnt/seestar /mnt/seestar2
+sudo chmod 777 /mnt/seestar /mnt/seestar2
+
 mkdir -p "$APP_DIR"
+mkdir -p "$APP_DIR/ref/day" "$APP_DIR/ref/evening" "$APP_DIR/ref/night"
+
+# Initialize default runtime data files if missing
+[ ! -f "$APP_DIR/hours.txt" ] && echo "0.0" > "$APP_DIR/hours.txt"
+[ ! -f "$APP_DIR/dew_cmd.txt" ] && echo "AUTO" > "$APP_DIR/dew_cmd.txt"
+[ ! -f "$APP_DIR/dossier.txt" ] && touch "$APP_DIR/dossier.txt"
+[ ! -f "$APP_DIR/sensors.txt" ] && touch "$APP_DIR/sensors.txt"
+
+# 5. Set up Python Virtual Environment (venv) with System Site Packages
+echo "🐍 Setting up Python venv at $VENV_DIR..."
 if [ ! -d "$VENV_DIR" ]; then
-    python3 -m venv "$VENV_DIR"
+    # --system-site-packages ensures tkinter, PIL.ImageTk, and OpenCV bind properly inside the venv
+    python3 -m venv --system-site-packages "$VENV_DIR"
 fi
 
 echo "📦 Installing required Python packages into venv..."
 "$VENV_DIR/bin/pip" install --upgrade pip
-"$VENV_DIR/bin/pip" install smbus2 bme280 requests matplotlib numpy opencv-python bleak pyserial RPi.GPIO
+"$VENV_DIR/bin/pip" install smbus2 bme280 requests matplotlib numpy opencv-python bleak pyserial RPi.GPIO rpi-lgpio || true
 
-# Ensure the non-root user owns the app directory and venv
-chown -R "$REAL_USER":"$REAL_USER" "$APP_DIR"
-
-# 5. Set User Group Permissions Safely
-echo "🔐 Configuring hardware access user permissions..."
+# 6. Set User Group Permissions & Executable Flags
+echo "🔐 Configuring hardware access user permissions & script execution..."
 for grp in dialout i2c gpio uucp bluetooth; do
     if getent group "$grp" >/dev/null 2>&1; then
         sudo usermod -a -G "$grp" "$REAL_USER"
@@ -91,7 +103,11 @@ for grp in dialout i2c gpio uucp bluetooth; do
     fi
 done
 
-# 6. Create background Systemd Service for sensor_worker
+# Ensure Python scripts have executable flags
+chmod +x "$APP_DIR"/*.py 2>/dev/null || true
+chown -R "$REAL_USER":"$REAL_USER" "$APP_DIR"
+
+# 7. Create Background Systemd Service for sensor_worker
 echo "⚙️ Creating sensor_worker systemd background service..."
 sudo bash -c "cat > /etc/systemd/system/sensor_worker.service <<EOF
 [Unit]
@@ -111,7 +127,7 @@ User=root
 WantedBy=multi-user.target
 EOF"
 
-# 7. Create Desktop Shortcut for HUD GUI
+# 8. Create Desktop Shortcut for HUD GUI
 echo "🖥️ Creating Desktop shortcut for HUD GUI..."
 DESKTOP_DIR="$USER_HOME/Desktop"
 mkdir -p "$DESKTOP_DIR"
@@ -130,24 +146,24 @@ StartupNotify=true
 Categories=Utility;
 EOF
 
-# Set ownership and permissions for the desktop entry
+# Set ownership, executable permissions, and desktop launcher authorization
 chown "$REAL_USER":"$REAL_USER" "$DESKTOP_DIR/allsky_hud.desktop"
 chmod +x "$DESKTOP_DIR/allsky_hud.desktop"
 
-# Authorize launcher on desktop environments that require it
 if command -v gio >/dev/null 2>&1; then
     sudo -u "$REAL_USER" gio trust "$DESKTOP_DIR/allsky_hud.desktop" || true
 fi
 
-# 8. Reload systemd daemon and enable services
-echo "🔄 Initializing background system service..."
+# 9. Reload Systemd Daemon and Immediately Launch Background Worker
+echo "🔄 Initializing background service..."
 sudo systemctl daemon-reload
 sudo systemctl enable sensor_worker.service
+sudo systemctl restart sensor_worker.service
 sudo systemctl restart bluetooth
 
 echo "===================================================="
 echo "✅ Installation Completed Successfully!"
 echo "📌 Target Environment: $OS_FAMILY"
 echo "📌 Desktop Shortcut: $DESKTOP_DIR/allsky_hud.desktop"
-echo "⚠️ Please REBOOT your system to apply group permission changes."
+echo "📌 Sensor Worker Service: Active & Running"
 echo "===================================================="
