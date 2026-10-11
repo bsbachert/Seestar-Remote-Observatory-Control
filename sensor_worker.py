@@ -63,6 +63,7 @@ def arduino_reader():
 
 threading.Thread(target=arduino_reader, daemon=True).start()
 last_check = time.time()
+auto_dew_state = False  # Track hysteresis state across loops
 
 while True:
     time.sleep(2)
@@ -83,15 +84,29 @@ while True:
     heater_status = "OFF"
     heater_on = False
     
+    # --- Dew Calculation & Intelligent Auto Heating ---
     dew_f = None
-    if amb_f and hum_val:
+    if amb_f is not None and hum_val is not None:
         try:
             T = (amb_f - 32) * 5/9
             gamma = (math.log(hum_val/100) + ((17.27 * T) / (237.3 + T)))
             dew_f = ((237.3 * gamma) / (17.27 - gamma) * 9/5) + 32
         except: pass
 
-    extreme_dew = (amb_f - dew_f) <= 15.0 if (amb_f and dew_f) else False
+    # Hysteresis + Relative Humidity Floor Evaluation
+    if amb_f is not None and dew_f is not None and hum_val is not None:
+        dew_delta = amb_f - dew_f
+        
+        # Turn ON if temp is within 3.0°F of dew point AND humidity is >= 80%
+        if dew_delta <= 3.0 and hum_val >= 80.0:
+            auto_dew_state = True
+        # Turn OFF if temp clears 5.5°F above dew point OR humidity drops below 75%
+        elif dew_delta >= 5.5 or hum_val < 75.0:
+            auto_dew_state = False
+
+        extreme_dew = auto_dew_state
+    else:
+        extreme_dew = False
 
     # Determine Heater State based on HUD command
     if dew_cmd == "ON":

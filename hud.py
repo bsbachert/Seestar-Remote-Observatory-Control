@@ -102,6 +102,10 @@ class SumnerHUD:
             try:
                 GPIO.setmode(GPIO.BCM)
                 GPIO.setup(4, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+                try:
+                    GPIO.remove_event_detect(4)
+                except Exception:
+                    pass
                 GPIO.add_event_detect(4, GPIO.FALLING, callback=self._anemometer_pulse, bouncetime=20)
                 self.gpio_enabled = True
             except Exception as e:
@@ -411,12 +415,12 @@ class SumnerHUD:
     def open_seestar_popout(self):
         popout = tk.Toplevel(self.root)
         active_ip = self.seestar_ip if self.active_seestar_index == 1 else self.seestar_2_ip
-        popout.title(f"Seestar #{self.active_seestar_index} Live Telemetry ({active_ip})")
+        popout.title(f"Seestar #{self.active_seestar_index} Live Stream ({active_ip})")
         popout.geometry("960x760")
         popout.attributes("-topmost", True)
         popout.configure(bg="black")
 
-        status_var = tk.StringVar(value="Connecting to event socket...")
+        status_var = tk.StringVar(value="Connecting to Seestar RTSP stream...")
         
         status_label = tk.Label(
             popout,
@@ -434,68 +438,80 @@ class SumnerHUD:
         img_label = tk.Label(popout, bg="black")
         img_label.pack(fill=tk.BOTH, expand=True)
 
-        telemetry = {
-            "stacked": 0,
-            "dropped": 0,
-            "total": 0,
-            "state": "Idle",
-            "temp": 0.0,
-            "running": True
-        }
+        state = {"running": True, "frame": None, "status": "Connecting..."}
 
-        def socket_listener():
-            while telemetry["running"]:
-                try:
-                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                        s.settimeout(5.0)
-                        s.connect((active_ip, 4700))
-                        
-                        stream = s.makefile('r')
-                        for line in stream:
-                            if not telemetry["running"]:
-                                break
-                            line = line.strip()
-                            if not line:
-                                continue
-                            
-                            try:
-                                msg = json.loads(line)
-                                event = msg.get("Event")
-                                
-                                if event == "Stack":
-                                    telemetry["state"] = msg.get("state", "working")
-                                    telemetry["stacked"] = msg.get("stacked_frame", telemetry["stacked"])
-                                    telemetry["dropped"] = msg.get("dropped_frame", telemetry["dropped"])
-                                    telemetry["total"] = msg.get("total_frame", telemetry["total"])
-                                elif event == "PiStatus":
-                                    telemetry["temp"] = msg.get("temp", telemetry["temp"])
-                            except json.JSONDecodeError:
-                                pass
-                except Exception as e:
-                    telemetry["state"] = f"Reconnecting socket... ({e})"
-                    time.sleep(3)
+        def rtsp_stream_worker():
+            if not active_ip or active_ip == "0.0.0.0":
+                state["status"] = "Error: Invalid Seestar IP configured in Dossier"
+                return
 
-        threading.Thread(target=socket_listener, daemon=True).start()
+            # Force TCP transport and set a 3-second network timeout
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|stimeout;3000000"
+
+            rtsp_urls = [
+                f"rtsp://{active_ip}:4554/stream",
+                f"rtsp://{active_ip}/live",
+                f"rtsp://{active_ip}/stream",
+                f"rtsp://{active_ip}:554/live"
+            ]
+
+            cap = None
+            connected_url = None
+
+            for url in rtsp_urls:
+                if not state["running"]:
+                    return
+                state["status"] = f"Connecting to {url}..."
+                test_cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+                
+                start_time = time.time()
+                while time.time() - start_time < 3.0:
+                    if test_cap.isOpened():
+                        ret, frame = test_cap.read()
+                        if ret and frame is not None:
+                            cap = test_cap
+                            connected_url = url
+                            break
+                    time.sleep(0.1)
+                    
+                if cap is not None:
+                    break
+                else:
+                    test_cap.release()
+
+            if cap is None or not cap.isOpened():
+                state["status"] = f"Failed to connect to Seestar RTSP at {active_ip}. Falling back to Samba share..."
+                return
+
+            state["status"] = f"LIVE STREAM: {connected_url}"
+
+            while state["running"]:
+                ret, frame = cap.read()
+                if not ret or frame is None:
+                    state["status"] = "Stream lost. Reconnecting..."
+                    time.sleep(1)
+                    continue
+
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                state["frame"] = frame_rgb
+                time.sleep(0.03)
+
+            cap.release()
+
+        threading.Thread(target=rtsp_stream_worker, daemon=True).start()
 
         def update_gui():
             if not popout.winfo_exists():
-                telemetry["running"] = False
+                state["running"] = False
                 return
 
-            status_text = (
-                f"STATUS: {telemetry['state'].upper()} | "
-                f"STACKED: {telemetry['stacked']}/{telemetry['total']} | "
-                f"DROPPED: {telemetry['dropped']} | "
-                f"TEMP: {telemetry['temp']:.1f}°C"
-            )
-            status_var.set(status_text)
+            status_label.config(text=state["status"])
 
-            latest_path = getattr(self, f"seestar_{self.active_seestar_index}_frame_path", None)
-            if latest_path and os.path.exists(latest_path):
+            if state["frame"] is not None:
                 try:
-                    img = Image.open(latest_path)
-                    win_w = max(popout.winfo_width(), 400)
-                    win_h = max(popout.winfo_height() - 40, 300)
+                    img = Image.fromarray(state["frame"])
+                    win_w = max(img_label.winfo_width(), 400)
+                    win_h = max(img_label.winfo_height(), 300)
                     img.thumbnail((win_w, win_h), Image.Resampling.LANCZOS)
                     
                     photo = ImageTk.PhotoImage(img)
@@ -503,15 +519,45 @@ class SumnerHUD:
                     img_label.image = photo
                 except Exception:
                     pass
+            else:
+                latest_path = getattr(self, f"seestar_{self.active_seestar_index}_frame_path", None)
+                if latest_path and os.path.exists(latest_path):
+                    try:
+                        img = Image.open(latest_path)
+                        win_w = max(img_label.winfo_width(), 400)
+                        win_h = max(img_label.winfo_height(), 300)
+                        img.thumbnail((win_w, win_h), Image.Resampling.LANCZOS)
+                        
+                        photo = ImageTk.PhotoImage(img)
+                        img_label.config(image=photo)
+                        img_label.image = photo
+                    except Exception:
+                        pass
 
-            popout.after(500, update_gui)
+            popout.after(100, update_gui)
 
         def on_close():
-            telemetry["running"] = False
+            state["running"] = False
             popout.destroy()
 
         popout.protocol("WM_DELETE_WINDOW", on_close)
         update_gui()
+
+    def calculate_sharpcap_score(self, path):
+        """Calculates a SharpCap-style focus/sharpness score using Laplacian variance."""
+        if not path or not os.path.exists(path):
+            return 0.0
+        try:
+            img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+            if img is None:
+                return 0.0
+            h, w = img.shape
+            if h > 800 or w > 800:
+                img = cv2.resize(img, (w // 2, h // 2))
+            score = cv2.Laplacian(img, cv2.CV_64F).var()
+            return round(score, 1)
+        except Exception:
+            return 0.0
 
     def get_radar_coords(self):
         try:
@@ -565,9 +611,9 @@ class SumnerHUD:
             server.quit()
         except Exception as e: print(f"Email Error: {e}")
 
-    def log_sensor_data(self, amb, hum, wind, pres, drift):
+    def log_sensor_data(self, amb, hum, wind, pres, drift, sharpness):
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        log_entry = f"{now_str} | Amb:{amb:.1f} | Hum:{hum:.0f} | Wind:{wind:.1f} | Pres:{pres:.2f} | Drift:{drift:.1f}\n"
+        log_entry = f"{now_str} | Amb:{amb:.1f} | Hum:{hum:.0f} | Wind:{wind:.1f} | Pres:{pres:.2f} | Drift:{drift:.1f} | Sharp:{sharpness:.1f}\n"
         try:
             with open(self.path_sensors_log, "a") as f: f.write(log_entry)
         except Exception as e: print(f"Logging Error: {e}")
@@ -976,6 +1022,11 @@ class SumnerHUD:
         alpaca_on = self.check_alpaca_status()
         self.right_panel.nametowidget(self.val_alpaca).config(text="ONLINE" if alpaca_on else "OFFLINE", fg="#00FF00" if alpaca_on else "#FF3333")
         
+        # Update SharpCap Sharpness Score from active Seestar frame
+        active_seestar_path = getattr(self, f"seestar_{self.active_seestar_index}_frame_path", None)
+        sharpcap_score = self.calculate_sharpcap_score(active_seestar_path)
+        self.right_panel.nametowidget(self.val_sharpcap).config(text=f"{sharpcap_score:.1f}")
+
         if os.path.exists(self.path_hours):
             try:
                 with open(self.path_hours, "r") as f:
@@ -1042,7 +1093,7 @@ class SumnerHUD:
                 current_time_ts = datetime.now().timestamp()
                 if (current_time_ts - self.last_log_time) >= 900: 
                     if all(v is not None for v in [amb_t, hum_val, wind_val, raw_p]):
-                        self.log_sensor_data(amb_t, hum_val, wind_val, raw_p * 0.02953, current_drift)
+                        self.log_sensor_data(amb_t, hum_val, wind_val, raw_p * 0.02953, current_drift, sharpcap_score)
                         self.last_log_time = current_time_ts
                 
                 dew_f = 0
@@ -1052,7 +1103,7 @@ class SumnerHUD:
                     dew_f = ((237.3 * gamma) / (17.27 - gamma) * 9/5) + 32
                     self.right_panel.nametowidget(self.val_dew).config(text=f"{dew_f:.1f} F")
                 
-                extreme_dew = (amb_t - dew_f) < 5 if (amb_t and dew_f) else False
+                extreme_dew = ((amb_t - dew_f) < 3.5 and hum_val >= 80.0) if (amb_t and dew_f and hum_val) else False
                 
                 if self.btn_dew and "AUTO" in self.btn_dew.cget("text"):
                     with open(self.path_dew_cmd, "w") as f:
@@ -1154,7 +1205,7 @@ class SumnerHUD:
         self.right_panel = tk.Frame(self.root, bg="#050505", bd=3, relief="ridge", highlightthickness=1, highlightbackground="#00FFCC")
         self.right_panel.grid(row=1, column=1, sticky="nsew", padx=10, pady=10)
         
-        for r in range(13): self.right_panel.grid_rowconfigure(r, weight=1) 
+        for r in range(14): self.right_panel.grid_rowconfigure(r, weight=1) 
         self.right_panel.grid_columnconfigure(0, weight=1)
         self.right_panel.grid_columnconfigure(1, weight=3)
         self.right_panel.grid_columnconfigure(2, weight=3)
@@ -1173,9 +1224,10 @@ class SumnerHUD:
         self.val_alpaca = self.build_telemetry_row("🔭", "ALPACA LINK:", "#00FF00", 10)
         
         self.val_drift = self.build_telemetry_row("🎯", "FOCUS DRIFT:", "#F1C40F", 11)
+        self.val_sharpcap = self.build_telemetry_row("📈", "SHARPCAP SCR:", "#00FFFF", 12)
         
         timer_frame = tk.Frame(self.right_panel, bg="#050505")
-        timer_frame.grid(row=12, column=0, columnspan=3, sticky="nsew", padx=5)
+        timer_frame.grid(row=13, column=0, columnspan=3, sticky="nsew", padx=5)
         timer_frame.grid_columnconfigure(1, weight=1)
         self.sync_canvas = tk.Canvas(timer_frame, width=16, height=16, bg="#050505", highlightthickness=0)
         self.sync_canvas.pack(side="left", padx=5)
@@ -1183,9 +1235,6 @@ class SumnerHUD:
         tk.Label(timer_frame, text="OP HOURS:", bg="#050505", fg="white", font=("Arial", 10, "bold")).pack(side="left")
         self.val_hrs = tk.Label(timer_frame, text="--", bg="#050505", fg="cyan", font=("Courier", 12, "bold"))
         self.val_hrs.pack(side="right", padx=10)
-
-        self.preview_frame = tk.Frame(self.root, bg="black")
-        self.preview_frame.grid(row=2, column=1, sticky="nsew", padx=5, pady=5)
 
     def build_telemetry_row(self, icon, label, color, row_idx):
         tk.Label(self.right_panel, text=icon, bg="#050505", fg=color, font=("Arial", 14), anchor="w").grid(row=row_idx, column=0, padx=5, sticky="w")
