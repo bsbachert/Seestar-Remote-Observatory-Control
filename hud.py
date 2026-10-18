@@ -7,7 +7,6 @@ import requests
 import webbrowser
 from email.message import EmailMessage
 from datetime import datetime, timedelta
-import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
@@ -16,12 +15,21 @@ import shutil
 import asyncio
 import threading
 
+import cv2
+
 # GPIO Hardware Import for Anemometer
 try:
     import RPi.GPIO as GPIO
     HAS_GPIO = True
 except ImportError:
     HAS_GPIO = False
+
+# HtmlFrame Import for Astrospheric Popup Window
+try:
+    from tkinterweb import HtmlFrame
+    HAS_TKINTERWEB = True
+except ImportError:
+    HAS_TKINTERWEB = False
 
 try:
     lock_file = open('/tmp/sumner_hud.lock', 'w')
@@ -164,6 +172,8 @@ class SumnerHUD:
         self.active_seestar_index = 1  # 1 or 2
         self.seestar_1_frame_path = None
         self.seestar_2_frame_path = None
+        self.seestar_1_fit_path = None
+        self.seestar_2_fit_path = None
 
         self.last_allsky_ts = 0
         self.last_ai_check = 0 
@@ -415,12 +425,12 @@ class SumnerHUD:
     def open_seestar_popout(self):
         popout = tk.Toplevel(self.root)
         active_ip = self.seestar_ip if self.active_seestar_index == 1 else self.seestar_2_ip
-        popout.title(f"Seestar #{self.active_seestar_index} Live Stream ({active_ip})")
-        popout.geometry("960x760")
+        popout.title(f"Seestar #{self.active_seestar_index} Viewer - JPEG Preview & Stacking fit ({active_ip})")
+        popout.geometry("1100x750")
         popout.attributes("-topmost", True)
         popout.configure(bg="black")
 
-        status_var = tk.StringVar(value="Connecting to Seestar RTSP stream...")
+        status_var = tk.StringVar(value="Monitoring Seestar Myworks storage (30s poll)...")
         
         status_label = tk.Label(
             popout,
@@ -429,119 +439,114 @@ class SumnerHUD:
             bg="#111111",
             font=("Courier", 10, "bold"),
             anchor="w",
-            justify="left",
             padx=10,
             pady=5
         )
         status_label.pack(fill=tk.X)
 
-        img_label = tk.Label(popout, bg="black")
-        img_label.pack(fill=tk.BOTH, expand=True)
+        view_frame = tk.Frame(popout, bg="black")
+        view_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        view_frame.grid_columnconfigure(0, weight=1)
+        view_frame.grid_columnconfigure(1, weight=1)
+        view_frame.grid_rowconfigure(0, weight=1)
 
-        state = {"running": True, "frame": None, "status": "Connecting..."}
+        # Left pane: JPEG Preview / Stacked Image
+        jpg_frame = tk.LabelFrame(view_frame, text="Latest JPEG Preview / Stack", bg="#111", fg="#00FFCC", font=("Arial", 10, "bold"))
+        jpg_frame.grid(row=0, column=0, sticky="nsew", padx=5)
+        jpg_label = tk.Label(jpg_frame, bg="black")
+        jpg_label.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        def rtsp_stream_worker():
-            if not active_ip or active_ip == "0.0.0.0":
-                state["status"] = "Error: Invalid Seestar IP configured in Dossier"
-                return
+        # Right pane: Stacking fit Image
+        fit_frame = tk.LabelFrame(view_frame, text="Stacking fit (Sub-frame / Raw)", bg="#111", fg="#FF33FF", font=("Arial", 10, "bold"))
+        fit_frame.grid(row=0, column=1, sticky="nsew", padx=5)
+        fit_label = tk.Label(fit_frame, bg="black")
+        fit_label.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-            # Force TCP transport and set a 3-second network timeout
-            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|stimeout;3000000"
-
-            rtsp_urls = [
-                f"rtsp://{active_ip}:4554/stream",
-                f"rtsp://{active_ip}/live",
-                f"rtsp://{active_ip}/stream",
-                f"rtsp://{active_ip}:554/live"
-            ]
-
-            cap = None
-            connected_url = None
-
-            for url in rtsp_urls:
-                if not state["running"]:
-                    return
-                state["status"] = f"Connecting to {url}..."
-                test_cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
-                
-                start_time = time.time()
-                while time.time() - start_time < 3.0:
-                    if test_cap.isOpened():
-                        ret, frame = test_cap.read()
-                        if ret and frame is not None:
-                            cap = test_cap
-                            connected_url = url
-                            break
-                    time.sleep(0.1)
-                    
-                if cap is not None:
-                    break
+        def load_fit_as_image(fit_path):
+            if not fit_path or not os.path.exists(fit_path):
+                return None
+            try:
+                from astropy.io import fits  # <-- Ensure this is 'fits'
+                with fits.open(fit_path) as hdul:
+                    data = hdul[0].data
+                    if data is None and len(hdul) > 1:
+                        data = hdul[1].data
+                if data is None:
+                    return None
+                if data.ndim == 3:
+                    data = data[0]
+                data = data.astype(np.float32)
+                d_min, d_max = np.percentile(data, (1, 99))
+                if d_max > d_min:
+                    data = np.clip((data - d_min) / (d_max - d_min) * 255.0, 0, 255)
                 else:
-                    test_cap.release()
+                    data = np.zeros_like(data)
+                return Image.fromarray(data.astype(np.uint8)).convert("RGB")
+            except ImportError:
+                img = Image.new('RGB', (400, 300), color=(20, 20, 20))
+                draw = ImageDraw.Draw(img)
+                draw.text((200, 150), "astropy not installed\n(pip install astropy)", fill="orange", anchor="mm", align="center")
+                return img
+            except Exception as e:
+                print(f"[HUD] fit render error: {e}")
+                return None
 
-            if cap is None or not cap.isOpened():
-                state["status"] = f"Failed to connect to Seestar RTSP at {active_ip}. Falling back to Samba share..."
-                return
-
-            state["status"] = f"LIVE STREAM: {connected_url}"
-
-            while state["running"]:
-                ret, frame = cap.read()
-                if not ret or frame is None:
-                    state["status"] = "Stream lost. Reconnecting..."
-                    time.sleep(1)
-                    continue
-
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                state["frame"] = frame_rgb
-                time.sleep(0.03)
-
-            cap.release()
-
-        threading.Thread(target=rtsp_stream_worker, daemon=True).start()
-
-        def update_gui():
+        def update_popout_views():
             if not popout.winfo_exists():
-                state["running"] = False
                 return
 
-            status_label.config(text=state["status"])
+            idx = self.active_seestar_index
+            jpg_path = getattr(self, f"seestar_{idx}_frame_path", f"/home/pi/allsky_guard/ref/latest_seestar_{idx}.jpg")
+            fit_path = getattr(self, f"seestar_{idx}_fit_path", f"/home/pi/allsky_guard/ref/latest_seestar_{idx}.fit")
 
-            if state["frame"] is not None:
+            if jpg_path and os.path.exists(jpg_path):
                 try:
-                    img = Image.fromarray(state["frame"])
-                    win_w = max(img_label.winfo_width(), 400)
-                    win_h = max(img_label.winfo_height(), 300)
-                    img.thumbnail((win_w, win_h), Image.Resampling.LANCZOS)
-                    
-                    photo = ImageTk.PhotoImage(img)
-                    img_label.config(image=photo)
-                    img_label.image = photo
+                    img = Image.open(jpg_path)
+                    w = max(jpg_label.winfo_width(), 350)
+                    h = max(jpg_label.winfo_height(), 300)
+                    img.thumbnail((w, h), Image.Resampling.LANCZOS)
+                    p_jpg = ImageTk.PhotoImage(img)
+                    jpg_label.config(image=p_jpg)
+                    jpg_label.image = p_jpg
                 except Exception:
                     pass
-            else:
-                latest_path = getattr(self, f"seestar_{self.active_seestar_index}_frame_path", None)
-                if latest_path and os.path.exists(latest_path):
-                    try:
-                        img = Image.open(latest_path)
-                        win_w = max(img_label.winfo_width(), 400)
-                        win_h = max(img_label.winfo_height(), 300)
-                        img.thumbnail((win_w, win_h), Image.Resampling.LANCZOS)
-                        
-                        photo = ImageTk.PhotoImage(img)
-                        img_label.config(image=photo)
-                        img_label.image = photo
-                    except Exception:
-                        pass
 
-            popout.after(100, update_gui)
+            fit_img = load_fit_as_image(fit_path)
+            if fit_img:
+                try:
+                    w = max(fit_label.winfo_width(), 350)
+                    h = max(fit_label.winfo_height(), 300)
+                    fit_img.thumbnail((w, h), Image.Resampling.LANCZOS)
+                    p_fit = ImageTk.PhotoImage(fit_img)
+                    fit_label.config(image=p_fit)
+                    fit_label.image = p_fit
+                except Exception:
+                    pass
+
+            status_var.set(f"Active Seestar #{idx} | JPEG: {os.path.basename(jpg_path) if jpg_path else 'None'} | fit: {os.path.basename(fit_path) if fit_path else 'None'}")
+            popout.after(2000, update_popout_views)
+
+        popout.after(100, update_popout_views)
 
         def on_close():
-            state["running"] = False
             popout.destroy()
 
         popout.protocol("WM_DELETE_WINDOW", on_close)
-        update_gui()
+
+    def open_astrospheric(self):
+        """Opens Astrospheric in a dedicated Chromium standalone app window over the HUD."""
+        coords = self.get_radar_coords()
+        url = f"https://www.astrospheric.com/?lat={coords['lat']}&lon={coords['lon']}"
+        try:
+            subprocess.Popen([
+                "chromium-browser",
+                f"--app={url}",
+                "--user-data-dir=/tmp/astrospheric_profile",
+                "--window-size=1024,768"
+            ])
+        except Exception as e:
+            print(f"[HUD] Astrospheric popup error: {e}")
+            webbrowser.open(url)
 
     def calculate_sharpcap_score(self, path):
         """Calculates a SharpCap-style focus/sharpness score using Laplacian variance."""
@@ -786,7 +791,8 @@ class SumnerHUD:
 
         self.ensure_mounted(mount_dir)
 
-        out_path = f"/home/pi/allsky_guard/ref/latest_seestar_{idx}.jpg"
+        out_path_jpg = f"/home/pi/allsky_guard/ref/latest_seestar_{idx}.jpg"
+        out_path_fit = f"/home/pi/allsky_guard/ref/latest_seestar_{idx}.fit"
         os.makedirs("/home/pi/allsky_guard/ref", exist_ok=True)
 
         def get_file_key(filepath):
@@ -797,28 +803,36 @@ class SumnerHUD:
             return (mtime, os.path.basename(filepath))
 
         try:
+            # Fetch latest JPEG preview/stacked image
             all_jpgs = (
                 glob.glob(f"{mount_dir}/**/*.jpg", recursive=True) + 
                 glob.glob(f"{mount_dir}/**/*.JPG", recursive=True)
             )
-            
-            valid_jpgs = [
-                f for f in all_jpgs 
-                if not f.lower().endswith("_thn.jpg")
-            ]
-
+            valid_jpgs = [f for f in all_jpgs if not f.lower().endswith("_thn.jpg")]
             if valid_jpgs:
                 latest_jpg = max(valid_jpgs, key=get_file_key)
-                shutil.copy(latest_jpg, out_path)
-                
-                if hasattr(self, "_seestar_cache"):
-                    delattr(self, "_seestar_cache")
-                    
-                setattr(self, f"seestar_{idx}_frame_path", out_path)
-        except Exception as e:
-            print(f"[HUD] Seestar frame fetch error on {mount_dir}: {e}")
+                shutil.copy(latest_jpg, out_path_jpg)
+                setattr(self, f"seestar_{idx}_frame_path", out_path_jpg)
 
-        self.root.after(10000, self.fetch_seestar_frame)
+            # Fetch latest fit stacking sub-frame
+            all_fit = (
+                glob.glob(f"{mount_dir}/**/*.fits", recursive=True) + 
+                glob.glob(f"{mount_dir}/**/*.FITS", recursive=True) +
+                glob.glob(f"{mount_dir}/**/*.fit", recursive=True) + 
+                glob.glob(f"{mount_dir}/**/*.FIT", recursive=True)
+            )
+            if all_fit:
+                latest_fit = max(all_fit, key=get_file_key)
+                shutil.copy(latest_fit, out_path_fit)
+                setattr(self, f"seestar_{idx}_fit_path", out_path_fit)
+
+            if hasattr(self, "_seestar_cache"):
+                delattr(self, "_seestar_cache")
+        except Exception as e:
+            print(f"[HUD] Seestar frame/fit fetch error on {mount_dir}: {e}")
+
+        # Polling interval set to 30 seconds (30000 ms) matching 30s subs
+        self.root.after(30000, self.fetch_seestar_frame)
 
     def show_weather_history(self):
         if not os.path.exists(self.path_sensors_log):
@@ -1018,11 +1032,12 @@ class SumnerHUD:
                 self.run_ai_clear_check()
                 
         net_stat, net_col = self.get_connection_type()
-        self.net_lbl.config(text=f"NET: {net_stat}", fg=net_col)
+        if hasattr(self, "net_telemetry_lbl"):
+            self.net_telemetry_lbl.config(text=f"NET: {net_stat}", fg=net_col)
+
         alpaca_on = self.check_alpaca_status()
         self.right_panel.nametowidget(self.val_alpaca).config(text="ONLINE" if alpaca_on else "OFFLINE", fg="#00FF00" if alpaca_on else "#FF3333")
         
-        # Update SharpCap Sharpness Score from active Seestar frame
         active_seestar_path = getattr(self, f"seestar_{self.active_seestar_index}_frame_path", None)
         sharpcap_score = self.calculate_sharpcap_score(active_seestar_path)
         self.right_panel.nametowidget(self.val_sharpcap).config(text=f"{sharpcap_score:.1f}")
@@ -1103,7 +1118,8 @@ class SumnerHUD:
                     dew_f = ((237.3 * gamma) / (17.27 - gamma) * 9/5) + 32
                     self.right_panel.nametowidget(self.val_dew).config(text=f"{dew_f:.1f} F")
                 
-                extreme_dew = ((amb_t - dew_f) < 3.5 and hum_val >= 80.0) if (amb_t and dew_f and hum_val) else False
+                # Tighter Dew Control: Triggers earlier to protect against radiational dome cooling
+                extreme_dew = ((amb_t - dew_f) < 6.0 or hum_val >= 70.0) if (amb_t and dew_f and hum_val) else False
                 
                 if self.btn_dew and "AUTO" in self.btn_dew.cget("text"):
                     with open(self.path_dew_cmd, "w") as f:
@@ -1138,7 +1154,7 @@ class SumnerHUD:
     def create_ui_elements(self):
         menu_frame = tk.Frame(self.root, bg="#0a0a0a", bd=2, relief="groove")
         menu_frame.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=5, pady=5)
-        for col in range(10): menu_frame.grid_columnconfigure(col, weight=1) 
+        for col in range(9): menu_frame.grid_columnconfigure(col, weight=1) 
         menu_frame.grid_rowconfigure(0, weight=1)
         
         exit_min_frame = tk.Frame(menu_frame, bg="#0a0a0a")
@@ -1165,8 +1181,8 @@ class SumnerHUD:
         self.btn_popout = tk.Button(menu_frame, text="📺 SEESTAR POP", bg="#27AE60", fg="white", font=("Arial", 9, "bold"), command=self.open_seestar_popout)
         self.btn_popout.grid(row=0, column=7, padx=4, pady=4, sticky="ew")
 
-        self.net_lbl = tk.Label(menu_frame, text="NET: CHECKING...", font=("Arial", 9, "bold"), bg="#0a0a0a", fg="cyan")
-        self.net_lbl.grid(row=0, column=9, padx=4, pady=4, sticky="e")
+        self.btn_astro = tk.Button(menu_frame, text="🔭 ASTROSPHERIC", bg="#1F618D", fg="white", font=("Arial", 9, "bold"), command=self.open_astrospheric)
+        self.btn_astro.grid(row=0, column=8, padx=4, pady=4, sticky="ew")
         
         self.left_workspace = tk.Frame(self.root, bg="black")
         self.left_workspace.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
@@ -1210,7 +1226,14 @@ class SumnerHUD:
         self.right_panel.grid_columnconfigure(1, weight=3)
         self.right_panel.grid_columnconfigure(2, weight=3)
         
-        tk.Label(self.right_panel, text="TELEMETRY", bg="#050505", fg="#00FFCC", font=("Arial", 12, "bold")).grid(row=0, column=0, columnspan=3, pady=5)
+        telemetry_title_frame = tk.Frame(self.right_panel, bg="#050505")
+        telemetry_title_frame.grid(row=0, column=0, columnspan=3, sticky="ew", pady=5, padx=5)
+        telemetry_title_frame.grid_columnconfigure(0, weight=1)
+        telemetry_title_frame.grid_columnconfigure(1, weight=1)
+        
+        tk.Label(telemetry_title_frame, text="TELEMETRY", bg="#050505", fg="#00FFCC", font=("Arial", 12, "bold")).grid(row=0, column=0, sticky="w")
+        self.net_telemetry_lbl = tk.Label(telemetry_title_frame, text="NET: --", bg="#050505", fg="cyan", font=("Arial", 9, "bold"))
+        self.net_telemetry_lbl.grid(row=0, column=1, sticky="e")
         
         self.val_amb = self.build_telemetry_row("🌡️", "AMB TEMP:", "#EC7063", 1)
         self.val_hum = self.build_telemetry_row("💧", "HUMIDITY:", "#5499C7", 2)
