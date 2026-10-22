@@ -14,6 +14,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import shutil
 import asyncio
 import threading
+import serial
 
 import cv2
 
@@ -99,6 +100,21 @@ class SumnerHUD:
 
         # Instantiate the Focus Tracker
         self.focus_monitor = FocusTracker(self.root)
+
+        # Direct Arduino Serial Connection Initialization
+        self.ser = None
+        self.running_serial = True
+        for port in ['/dev/ttyUSB0', '/dev/ttyACM0', '/dev/ttyUSB1', '/dev/ttyACM1']:
+            try:
+                self.ser = serial.Serial(port, 9600, timeout=1)
+                time.sleep(2)
+                print(f"[HUD] Connected directly to Arduino on {port}")
+                break
+            except Exception:
+                continue
+
+        if self.ser:
+            threading.Thread(target=self._read_serial_loop, daemon=True).start()
 
         # GPIO Anemometer Setup (Brown -> GPIO 4, Blue -> Ground)
         self.gpio_enabled = False
@@ -228,6 +244,20 @@ class SumnerHUD:
         self.fetch_seestar_frame()
         self.fetch_radar_auto()
         self.update_loop()
+
+    def _read_serial_loop(self):
+        """Background thread to read incoming Arduino serial telemetry."""
+        while getattr(self, "running_serial", True):
+            if self.ser and self.ser.is_open:
+                try:
+                    if self.ser.in_waiting > 0:
+                        line = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                        if line.startswith("WEATHER:"):
+                            # Optional: parse live serial telemetry directly if needed
+                            pass
+                except Exception as e:
+                    print(f"[HUD] Serial read error: {e}")
+            time.sleep(0.1)
 
     def _anemometer_pulse(self, channel):
         self.pulse_count += 1
@@ -624,6 +654,12 @@ class SumnerHUD:
         except Exception as e: print(f"Logging Error: {e}")
 
     def shutdown(self):
+        self.running_serial = False
+        if hasattr(self, 'ser') and self.ser and self.ser.is_open:
+            try:
+                self.ser.close()
+            except:
+                pass
         if HAS_GPIO and self.gpio_enabled:
             try:
                 GPIO.cleanup(4)
@@ -712,10 +748,20 @@ class SumnerHUD:
             self.popout(debug_path)
 
     def manual_open(self):
+        if self.ser and self.ser.is_open:
+            try:
+                self.ser.write(b"ROOF:OPEN\n")
+            except Exception as e:
+                print(f"[HUD Serial Error] {e}")
         with open(self.path_roof_cmd, "w") as f: f.write("OPEN")
         messagebox.showinfo("ROOF", "Manual OPEN command sent.")
 
     def manual_close(self):
+        if self.ser and self.ser.is_open:
+            try:
+                self.ser.write(b"ROOF:CLOSE\n")
+            except Exception as e:
+                print(f"[HUD Serial Error] {e}")
         with open(self.path_roof_cmd, "w") as f: f.write("CLOSE")
         messagebox.showinfo("ROOF", "Manual CLOSE command sent.")
 
@@ -1140,6 +1186,11 @@ class SumnerHUD:
                 self.right_panel.nametowidget(self.val_dome).config(text=roof_text, fg=roof_color)
                 
                 if self.is_wet or self.is_obscured or (wind_val and wind_val > 20) or (self.ai_sky_status == "CLOUDY"):
+                    if self.ser and self.ser.is_open:
+                        try:
+                            self.ser.write(b"ROOF:CLOSE\n")
+                        except Exception as e:
+                            print(f"[HUD Serial Error] {e}")
                     with open(self.path_roof_cmd, "w") as f: f.write("CLOSE")
                     if self.last_roof_safety_state == "SAFE TO OPEN" and not self.emergency_sent:
                         reason = "RAIN/OBSCURED" if (self.is_wet or self.is_obscured) else ("INCOMING CLOUD FRONT" if self.ai_sky_status == "CLOUDY" else f"HIGH WIND ({wind_val} mph)")
