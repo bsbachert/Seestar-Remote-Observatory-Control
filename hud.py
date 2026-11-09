@@ -14,16 +14,9 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import shutil
 import asyncio
 import threading
-import serial
+from concurrent.futures import ThreadPoolExecutor
 
 import cv2
-
-# GPIO Hardware Import for Anemometer
-try:
-    import RPi.GPIO as GPIO
-    HAS_GPIO = True
-except ImportError:
-    HAS_GPIO = False
 
 # HtmlFrame Import for Astrospheric Popup Window
 try:
@@ -94,6 +87,17 @@ class SumnerHUD:
         self.root.attributes('-fullscreen', True)
         self.root.attributes("-topmost", True)
         self.root.config(bg='black')
+        self._hud_alive = True
+
+        # Background I/O pool keeps network, email and storage work off Tk's UI thread.
+        self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="hud-io")
+        self._background_jobs = set()
+        self._background_lock = threading.Lock()
+        self._last_net_check = 0.0
+        self._cached_net_status = ("CHECKING", "gray")
+        self._sharpness_cache = (None, 0.0)
+        self._last_hours_read = 0.0
+        self._cached_hours = 0.0
 
         self.sw = self.root.winfo_screenwidth()
         self.sh = self.root.winfo_screenheight()
@@ -101,43 +105,15 @@ class SumnerHUD:
         # Instantiate the Focus Tracker
         self.focus_monitor = FocusTracker(self.root)
 
-        # Direct Arduino Serial Connection Initialization
-        self.ser = None
-        self.running_serial = True
-        for port in ['/dev/ttyUSB0', '/dev/ttyACM0', '/dev/ttyUSB1', '/dev/ttyACM1']:
-            try:
-                self.ser = serial.Serial(port, 9600, timeout=1)
-                time.sleep(2)
-                print(f"[HUD] Connected directly to Arduino on {port}")
-                break
-            except Exception:
-                continue
-
-        if self.ser:
-            threading.Thread(target=self._read_serial_loop, daemon=True).start()
-
-        # GPIO Anemometer Setup (Brown -> GPIO 4, Blue -> Ground)
-        self.gpio_enabled = False
-        self.pulse_count = 0
-        self.last_gpio_wind_check = time.time()
-        self.gpio_wind_speed_mph = 0.0
-
-        if HAS_GPIO:
-            try:
-                GPIO.setmode(GPIO.BCM)
-                GPIO.setup(4, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-                try:
-                    GPIO.remove_event_detect(4)
-                except Exception:
-                    pass
-                GPIO.add_event_detect(4, GPIO.FALLING, callback=self._anemometer_pulse, bouncetime=20)
-                self.gpio_enabled = True
-            except Exception as e:
-                print(f"[HUD] GPIO 4 Anemometer Initialization Error: {e}")
-
         # Existing Configuration
         self.email_sender = "bsbachert@gmail.com"
-        self.email_pass = "pucapkfuesrrnasm" 
+        self.email_pass = os.environ.get("ALLSKY_GMAIL_APP_PASSWORD", "").strip()
+        if not self.email_pass:
+            try:
+                with open("/home/pi/.config/allsky_guard/gmail_app_password", "r") as f:
+                    self.email_pass = f.read().strip()
+            except OSError:
+                self.email_pass = ""
         self.path_email = "/home/pi/allsky_guard/email_receiver.txt"
         self.path_dew_cmd = "/home/pi/allsky_guard/dew_cmd.txt"
         self.email_receiver = "bsbachert@gmail.com"
@@ -167,6 +143,7 @@ class SumnerHUD:
         self.path_radar_id = "/home/pi/allsky_guard/radar_coords.txt"
         self.path_csk_id = "/home/pi/allsky_guard/csk_id.txt"
         self.path_sync_script = "/home/pi/allsky_guard/get_radar.py"
+        self.path_notification_state = "/home/pi/allsky_guard/notification_state.json"
 
         self.img_all = None
         self.img_rad = None
@@ -201,6 +178,17 @@ class SumnerHUD:
         self.is_wet = False
         self.is_obscured = False
         self.maintenance_alerted = False
+        self.maintenance_alert_pending = False
+        self.maintenance_popup_shown = False
+
+        try:
+            with open(self.path_notification_state, "r", encoding="utf-8") as f:
+                saved_state = json.load(f)
+            self.emergency_sent = bool(saved_state.get("weather_active", False))
+            self.dusk_sent_today = saved_state.get("dusk_sent_date")
+            self.maintenance_alerted = bool(saved_state.get("maintenance_sent", False))
+        except (OSError, ValueError, TypeError):
+            pass
 
         self.ai_radius_pct = 35.0
         if os.path.exists(self.path_thresh):
@@ -245,35 +233,6 @@ class SumnerHUD:
         self.fetch_radar_auto()
         self.update_loop()
 
-    def _read_serial_loop(self):
-        """Background thread to read incoming Arduino serial telemetry."""
-        while getattr(self, "running_serial", True):
-            if self.ser and self.ser.is_open:
-                try:
-                    if self.ser.in_waiting > 0:
-                        line = self.ser.readline().decode('utf-8', errors='ignore').strip()
-                        if line.startswith("WEATHER:"):
-                            # Optional: parse live serial telemetry directly if needed
-                            pass
-                except Exception as e:
-                    print(f"[HUD] Serial read error: {e}")
-            time.sleep(0.1)
-
-    def _anemometer_pulse(self, channel):
-        self.pulse_count += 1
-
-    def calculate_gpio_wind_speed(self):
-        """Calculates wind speed in MPH from pulse counts on GPIO 4."""
-        now = time.time()
-        elapsed = now - self.last_gpio_wind_check
-        if elapsed >= 2.0:
-            pulses = self.pulse_count
-            self.pulse_count = 0
-            self.last_gpio_wind_check = now
-            pulses_per_sec = pulses / elapsed
-            self.gpio_wind_speed_mph = round(pulses_per_sec * 1.492, 1)
-        return self.gpio_wind_speed_mph
-
     def ensure_mounted(self, mount_point="/mnt/seestar"):
         """Checks if the mount point is active and attempts auto-mount if disconnected."""
         if not os.path.ismount(mount_point):
@@ -296,7 +255,13 @@ class SumnerHUD:
 
     def _run_bleak_task(self, term_widget, pop_window):
         from bleak import BleakClient
-        mac = "E1:6A:83:06:38:48"
+        default_mac = "E1:6A:83:06:38:48"
+        try:
+            with open(self.path_fingerbot_mac, "r", encoding="utf-8") as f:
+                mac = f.read().strip() or default_mac
+        except OSError:
+            mac = default_mac
+
         uuid = "cba20002-224d-11e6-9fb8-0002a5d5c51b"
         cmd = bytearray([0x57, 0x01, 0x01])
 
@@ -318,18 +283,16 @@ class SumnerHUD:
         asyncio.run(run())
 
     def open_seestar_cam(self):
-        """Pops out a live window streaming video from the ESP32 monitor camera."""
+        """Pops out a live window streaming video from the USB-connected ZWO ASI 120 camera."""
         pop = tk.Toplevel(self.root)
-        pop.title("Seestar Monitor Camera")
+        pop.title("ASI 120 Guide / Monitor Camera")
         pop.geometry(f"{int(self.sw * 0.55)}x{int(self.sh * 0.65)}")
         pop.config(bg='black')
         pop.attributes("-topmost", True)
         
-        target_ip = self.esp_ip.strip()
-        
         header_lbl = tk.Label(
             pop, 
-            text=f"ESP32-CAM MONITOR STREAM ({target_ip})", 
+            text="ZWO ASI 120 LIVE STREAM (Raspberry Pi USB)", 
             bg="black", 
             fg="#00FF55", 
             font=("Arial", 12, "bold")
@@ -338,7 +301,7 @@ class SumnerHUD:
         
         status_lbl = tk.Label(
             pop, 
-            text="Connecting to ESP32-CAM stream...", 
+            text="Initializing ASI camera...", 
             bg="black", 
             fg="yellow", 
             font=("Courier", 10)
@@ -351,53 +314,49 @@ class SumnerHUD:
         state = {"running": True, "frame": None, "status": "Connecting..."}
 
         def stream_worker():
-            if not target_ip or target_ip == "0.0.0.0":
-                state["status"] = "Error: Invalid ESP32 IP configured in Dossier"
-                return
+            try:
+                import pyzwoasi
+                from pyzwoasi import ZWOCamera
+                
+                # Automatically look for camera library SDK path if needed
+                # pyzwoasi.config.ASI_LIB_LOCATION should be set if installed locally, e.g.:
+                # pyzwoasi.init('/usr/lib/libASICamera2.so')
 
-            urls_to_try = []
-            if target_ip.startswith("http://") or target_ip.startswith("https://"):
-                urls_to_try.append(target_ip)
-            else:
-                urls_to_try.append(f"http://{target_ip}:81/stream")
-                urls_to_try.append(f"http://{target_ip}/stream")
-                urls_to_try.append(f"http://{target_ip}/")
-
-            cap = None
-            connected_url = None
-
-            for url in urls_to_try:
-                if not state["running"]:
+                num_cameras = pyzwoasi.getNumOfConnectedCameras()
+                if num_cameras == 0:
+                    state["status"] = "Error: No ZWO ASI camera detected on USB hub."
                     return
-                state["status"] = f"Connecting to {url}..."
-                test_cap = cv2.VideoCapture(url)
-                if test_cap.isOpened():
-                    ret, frame = test_cap.read()
-                    if ret and frame is not None:
-                        cap = test_cap
-                        connected_url = url
-                        break
-                    else:
-                        test_cap.release()
 
-            if cap is None or not cap.isOpened():
-                state["status"] = f"Failed to connect to ESP32 camera at {target_ip}"
-                return
+                with ZWOCamera(0) as camera:
+                    state["status"] = f"LIVE STREAM: ASI Camera Connected"
+                    
+                    try:
+                        camera.set_control_value(pyzwoasi.ASI_GAIN, 300)
+                        camera.set_control_value(pyzwoasi.ASI_EXPOSURE, 500000) # 500ms
+                    except Exception as ctrl_ex:
+                        print(f"[HUD] Control setting warning: {ctrl_ex}")
+                    
+                    while state["running"]:
+                        try:
+                            frame = camera.shot(exposureTime_us=500000)
+                            if frame is not None:
+                                alpha = 2.5 
+                                beta = 20
+                                boosted_frame = cv2.convertScaleAbs(frame, alpha=alpha, beta=beta)
 
-            state["status"] = f"LIVE STREAM: {connected_url}"
+                                if len(boosted_frame.shape) == 2:
+                                    frame_rgb = cv2.cvtColor(boosted_frame, cv2.COLOR_GRAY2RGB)
+                                else:
+                                    frame_rgb = cv2.cvtColor(boosted_frame, cv2.COLOR_BGR2RGB)
+                                state["frame"] = frame_rgb
+                        except Exception as ex:
+                            state["status"] = f"Capture error: {ex}"
+                            time.sleep(0.5)
 
-            while state["running"]:
-                ret, frame = cap.read()
-                if not ret or frame is None:
-                    state["status"] = "Stream lost. Reconnecting..."
-                    time.sleep(1)
-                    continue
-
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                state["frame"] = frame_rgb
-                time.sleep(0.03)
-
-            cap.release()
+            except ImportError:
+                state["status"] = "Error: 'pyzwoasi' package not found in virtualenv."
+            except Exception as e:
+                state["status"] = f"ASI Camera Error: {str(e)}"
 
         threading.Thread(target=stream_worker, daemon=True).start()
 
@@ -408,7 +367,7 @@ class SumnerHUD:
 
             status_lbl.config(
                 text=state["status"], 
-                fg="#00FF00" if "LIVE" in state["status"] else ("red" if "Failed" in state["status"] or "Error" in state["status"] else "yellow")
+                fg="#00FF00" if "LIVE" in state["status"] else "yellow"
             )
 
             if state["frame"] is not None:
@@ -632,19 +591,54 @@ class SumnerHUD:
                 with open(self.path_dew_cmd, "w") as f:
                     f.write("AUTO")
 
-    def send_email_notification(self, subject, body):
-        try:
-            msg = EmailMessage()
-            msg.set_content(body)
-            msg['Subject'] = subject
-            msg['From'] = self.email_sender
-            msg['To'] = self.email_receiver
-            server = smtplib.SMTP('smtp.gmail.com', 587)
-            server.starttls()
-            server.login(self.email_sender, self.email_pass)
-            server.send_message(msg)
-            server.quit()
-        except Exception as e: print(f"Email Error: {e}")
+    def send_email_notification(self, subject, body, on_done=None):
+        """Send email in background and report actual SMTP success."""
+        if not self.email_pass:
+            print("[HUD] Email skipped: Gmail App Password is unavailable.")
+            return False
+
+        def deliver():
+            try:
+                msg = EmailMessage()
+                msg.set_content(body)
+                msg["Subject"] = subject
+                msg["From"] = self.email_sender
+                msg["To"] = self.email_receiver
+                with smtplib.SMTP("smtp.gmail.com", 587, timeout=12) as server:
+                    server.starttls()
+                    server.login(self.email_sender, self.email_pass)
+                    server.send_message(msg)
+                print(f"[HUD] Email sent: {subject}")
+                return True
+            except Exception as exc:
+                print(f"[HUD] Email Error ({subject}): {exc}")
+                return False
+
+        return self._submit_background(
+            f"email:{subject}", deliver, on_done=on_done
+        )
+
+    def _submit_background(self, key, func, on_done=None):
+        """Run one instance of a named task; deliver optional callback on Tk thread."""
+        with self._background_lock:
+            if key in self._background_jobs:
+                return False
+            self._background_jobs.add(key)
+
+        future = self._executor.submit(func)
+
+        def finished(done):
+            with self._background_lock:
+                self._background_jobs.discard(key)
+            if on_done and getattr(self, "_hud_alive", True):
+                try:
+                    result = done.result()
+                    self.root.after(0, lambda: on_done(result))
+                except Exception as exc:
+                    print(f"[HUD] Background task {key} failed: {exc}")
+
+        future.add_done_callback(finished)
+        return True
 
     def log_sensor_data(self, amb, hum, wind, pres, drift, sharpness):
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -654,22 +648,16 @@ class SumnerHUD:
         except Exception as e: print(f"Logging Error: {e}")
 
     def shutdown(self):
-        self.running_serial = False
-        if hasattr(self, 'ser') and self.ser and self.ser.is_open:
-            try:
-                self.ser.close()
-            except:
-                pass
-        if HAS_GPIO and self.gpio_enabled:
-            try:
-                GPIO.cleanup(4)
-            except Exception:
-                pass
+        self._hud_alive = False
         try:
             fcntl.lockf(lock_file, fcntl.LOCK_UN)
             lock_file.close()
             if os.path.exists('/tmp/sumner_hud.lock'): os.remove('/tmp/sumner_hud.lock')
         except Exception as e: print(f"Shutdown Error: {e}")
+        try:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
         self.root.destroy()
         sys.exit(0)
 
@@ -679,99 +667,110 @@ class SumnerHUD:
             self.sh = event.height
 
     def run_ai_clear_check(self, manual_click=False):
-        if not os.path.exists(self.path_allsky): return
-        
-        current_img = cv2.imread(self.path_allsky)
-        gray_curr = cv2.cvtColor(current_img, cv2.COLOR_BGR2GRAY)
-        
-        h, w = gray_curr.shape
-        offset_x = 120
-        offset_y = 0
-        center = ((w // 2) + offset_x, (h // 2) + offset_y)
-        
-        radius = int(min(h, w) * (self.ai_radius_pct / 100.0)) 
-        
-        mask = np.zeros_like(gray_curr)
-        cv2.circle(mask, center, radius, 255, -1)
-        masked_gray = cv2.bitwise_and(gray_curr, mask)
-        
-        laplacian = cv2.Laplacian(gray_curr, cv2.CV_64F)
-        variance = laplacian[mask == 255].var() if np.any(mask) else 0
-        
-        is_obscured = (variance < 2.0)
-        
-        hour = datetime.now().hour
-        if 6 <= hour < 17: folder = "day"
-        elif 17 <= hour < 20: folder = "evening"
-        else: folder = "night"
-        ref_folder = f"/home/pi/allsky_guard/ref/{folder}/"
-        
-        best_match = "UNCERTAIN"
-        highest_score = -1.0
-        masked_gray_blurred = cv2.GaussianBlur(masked_gray, (5, 5), 0)
-        
-        if os.path.exists(ref_folder):
-            for ref_file in os.listdir(ref_folder):
-                if not ref_file.endswith(".jpg"): continue
-                ref_img = cv2.imread(os.path.join(ref_folder, ref_file), cv2.IMREAD_GRAYSCALE)
-                
-                if ref_img is not None:
-                    ref_img = cv2.resize(ref_img, (masked_gray_blurred.shape[1], masked_gray_blurred.shape[0]))
-                    ref_img_masked = cv2.bitwise_and(ref_img, mask)
-                    
-                    score = cv2.matchTemplate(masked_gray_blurred, ref_img_masked, cv2.TM_CCOEFF_NORMED)[0][0]
+        """Run CPU-heavy sky comparison in a worker; update Tk widgets on the UI thread."""
+        path = self.path_allsky
+        radius_pct = float(self.ai_radius_pct)
+        manual = bool(manual_click)
+
+        def analyze():
+            if not os.path.exists(path):
+                return None
+            current_img = cv2.imread(path)
+            if current_img is None:
+                return None
+            gray_curr = cv2.cvtColor(current_img, cv2.COLOR_BGR2GRAY)
+            h, w = gray_curr.shape
+            center = ((w // 2) + 120, h // 2)
+            radius = int(min(h, w) * (radius_pct / 100.0))
+            mask = np.zeros_like(gray_curr)
+            cv2.circle(mask, center, radius, 255, -1)
+            laplacian = cv2.Laplacian(gray_curr, cv2.CV_64F)
+            variance = float(laplacian[mask == 255].var()) if np.any(mask) else 0.0
+            obscured = variance < 2.0
+
+            hour = datetime.now().hour
+            folder = "day" if 6 <= hour < 17 else ("evening" if 17 <= hour < 20 else "night")
+            ref_folder = f"/home/pi/allsky_guard/ref/{folder}/"
+            best_match, highest_score = "UNCERTAIN", -1.0
+            masked_blurred = cv2.GaussianBlur(cv2.bitwise_and(gray_curr, mask), (5, 5), 0)
+
+            if not obscured and os.path.isdir(ref_folder):
+                for ref_file in os.listdir(ref_folder):
+                    if not ref_file.lower().endswith(".jpg"):
+                        continue
+                    ref_img = cv2.imread(os.path.join(ref_folder, ref_file), cv2.IMREAD_GRAYSCALE)
+                    if ref_img is None:
+                        continue
+                    ref_img = cv2.resize(ref_img, (w, h), interpolation=cv2.INTER_AREA)
+                    ref_masked = cv2.bitwise_and(ref_img, mask)
+                    score = float(cv2.matchTemplate(masked_blurred, ref_masked, cv2.TM_CCOEFF_NORMED)[0][0])
                     if score > highest_score:
                         highest_score = score
-                        best_match = ref_file.replace(".jpg", "").replace("_", " ")
+                        best_match = ref_file[:-4].replace("_", " ")
 
-        if is_obscured:
-            self.ai_sky_status = "OBSCURED"
-            status, color = "AI: DOME OBSCURED", "#922B21"
-        else:
-            self.ai_sky_status = best_match.upper()
-            color = "#1E8449" if "CLEAR" in self.ai_sky_status else "#D4AC0D"
-            status = f"AI: {self.ai_sky_status}"
+            if obscured:
+                sky_status, color = "OBSCURED", "#922B21"
+                status = "AI: DOME OBSCURED"
+            else:
+                sky_status = best_match.upper()
+                color = "#1E8449" if "CLEAR" in sky_status else "#D4AC0D"
+                status = f"AI: {sky_status}"
 
-        self.btn_ai.config(text=f"{status}\n({folder.upper()} | Var: {variance:.1f})", bg=color)
+            debug_path = None
+            if manual:
+                debug_img = current_img.copy()
+                cv2.circle(debug_img, center, radius, (0, 255, 255), 2)
+                mask_3c = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+                darkened = cv2.addWeighted(debug_img, 0.3, np.zeros_like(debug_img), 0.7, 0)
+                debug_img = np.where(mask_3c == 255, debug_img, darkened)
+                txt_color = (0, 255, 0) if color == "#1E8449" else (0, 165, 255)
+                if obscured:
+                    txt_color = (0, 0, 255)
+                cv2.putText(debug_img, f"STATUS: {sky_status}", (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.5, txt_color, 3)
+                debug_path = "/tmp/motion_debug.jpg"
+                cv2.imwrite(debug_path, debug_img)
+            return sky_status, color, status, folder, variance, debug_path
 
-        if manual_click:
-            debug_img = current_img.copy()
-            cv2.circle(debug_img, center, radius, (0, 255, 255), 2)
-            mask_3c = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-            darkened = cv2.addWeighted(debug_img, 0.3, np.zeros_like(debug_img), 0.7, 0)
-            debug_img = np.where(mask_3c == 255, debug_img, darkened)
-            txt_color = (0, 255, 0) if color == "#1E8449" else (0, 165, 255)
-            if is_obscured: txt_color = (0, 0, 255)
-            cv2.putText(debug_img, f"STATUS: {self.ai_sky_status}", (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.5, txt_color, 3)
-            debug_path = "/tmp/motion_debug.jpg"
-            cv2.imwrite(debug_path, debug_img)
-            self.popout(debug_path)
+        def apply(result):
+            if result is None:
+                return
+            sky_status, color, status, folder, variance, debug_path = result
+            self.ai_sky_status = sky_status
+            self.btn_ai.config(text=f"{status}\\n({folder.upper()} | Var: {variance:.1f})", bg=color)
+            if debug_path:
+                self.popout(debug_path)
+
+        self._submit_background("sky_analysis", analyze, apply)
 
     def manual_open(self):
-        if self.ser and self.ser.is_open:
-            try:
-                self.ser.write(b"ROOF:OPEN\n")
-            except Exception as e:
-                print(f"[HUD Serial Error] {e}")
-        with open(self.path_roof_cmd, "w") as f: f.write("OPEN")
-        messagebox.showinfo("ROOF", "Manual OPEN command sent.")
+        messagebox.showwarning(
+            "ROOF NOT COMMISSIONED",
+            "Roof movement is disabled. Install and test the roof safety switches "
+            "and relay hardware before commissioning roof control."
+        )
 
     def manual_close(self):
-        if self.ser and self.ser.is_open:
-            try:
-                self.ser.write(b"ROOF:CLOSE\n")
-            except Exception as e:
-                print(f"[HUD Serial Error] {e}")
-        with open(self.path_roof_cmd, "w") as f: f.write("CLOSE")
-        messagebox.showinfo("ROOF", "Manual CLOSE command sent.")
+        messagebox.showwarning(
+            "ROOF NOT COMMISSIONED",
+            "No roof movement command was sent. Roof controls are not commissioned."
+        )
 
     def get_connection_type(self):
+
+        now = time.monotonic()
+        if now - self._last_net_check < 30.0:
+            return self._cached_net_status
+        self._last_net_check = now
         try:
-            ips = subprocess.check_output("hostname -I", shell=True).decode().split()
-            for ip in ips:
-                if ip.startswith("100."): return "REMOTE (VPN)", "orange"
-            return "LOCAL (WiFi)", "lightgreen"
-        except: return "UNKNOWN", "gray"
+            # hostname -I is retained for compatibility, but only queried every 30s.
+            ips = subprocess.check_output(["hostname", "-I"], timeout=2).decode().split()
+            self._cached_net_status = (
+                ("REMOTE (VPN)", "orange") if any(ip.startswith("100.") for ip in ips)
+                else ("LOCAL (WiFi)", "lightgreen")
+            )
+        except Exception:
+            self._cached_net_status = ("UNKNOWN", "gray")
+        return self._cached_net_status
 
     def create_placeholder(self, text, w, h):
         if w <= 10 or h <= 10: w, h = 100, 100
@@ -814,24 +813,47 @@ class SumnerHUD:
             except: pass
 
     def check_alpaca_status(self):
-        now_ts = time.time()
-        if now_ts - self._last_alpaca_check < 10:
-            return self._cached_alpaca_status
+        """Return cached status immediately; perform TCP probe outside Tk's thread."""
+        now_ts = time.monotonic()
+        if now_ts - self._last_alpaca_check >= 10.0:
+            self._last_alpaca_check = now_ts
+            target_ip = self.seestar_ip if self.active_seestar_index == 1 else self.seestar_2_ip
 
-        self._last_alpaca_check = now_ts
-        target_ip = self.seestar_ip if self.active_seestar_index == 1 else self.seestar_2_ip
-        if not target_ip or target_ip == "0.0.0.0": 
-            self._cached_alpaca_status = False
-            return False
-        try:
-            with socket.create_connection((target_ip, 4700), timeout=1.5):
-                self._cached_alpaca_status = True
-                return True
-        except (socket.timeout, socket.error):
-            self._cached_alpaca_status = False
-            return False
+            def probe():
+                if not target_ip or target_ip == "0.0.0.0":
+                    return False
+                try:
+                    with socket.create_connection((target_ip, 4700), timeout=1.5):
+                        return True
+                except OSError:
+                    return False
+
+            def apply(status):
+                self._cached_alpaca_status = bool(status)
+
+            self._submit_background("alpaca_probe", probe, apply)
+        return self._cached_alpaca_status
 
     def fetch_seestar_frame(self):
+
+        """Schedule Seestar file scanning without blocking the HUD."""
+
+        if not getattr(self, "_hud_alive", True):
+
+            return
+
+        threading.Thread(
+
+            target=self._fetch_seestar_frame_worker,
+
+            daemon=True,
+
+        ).start()
+
+        self.root.after(30000, self.fetch_seestar_frame)
+
+
+    def _fetch_seestar_frame_worker(self):
         idx = getattr(self, "active_seestar_index", 1)
         mount_dir = "/mnt/seestar" if idx == 1 else f"/mnt/seestar{idx}"
 
@@ -877,8 +899,6 @@ class SumnerHUD:
         except Exception as e:
             print(f"[HUD] Seestar frame/fit fetch error on {mount_dir}: {e}")
 
-        # Polling interval set to 30 seconds (30000 ms) matching 30s subs
-        self.root.after(30000, self.fetch_seestar_frame)
 
     def show_weather_history(self):
         if not os.path.exists(self.path_sensors_log):
@@ -939,16 +959,40 @@ class SumnerHUD:
 
     def fetch_online_wind_dir(self):
         coords = self.get_radar_coords()
-        try:
-            url = f"https://api.open-meteo.com/v1/forecast?latitude={coords['lat']}&longitude={coords['lon']}&current_weather=true"
-            data = requests.get(url, timeout=5).json()
-            degrees = data['current_weather']['winddirection']
-            dirs = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW']
-            cardinal = dirs[round(degrees / (360. / len(dirs))) % len(dirs)]
-            self.right_panel.nametowidget(self.val_dir).config(text=f"{cardinal} ({degrees}°)")
-        except Exception as e:
-            print(f"Weather API Error: {e}")
+
+        def fetch():
+            url = (
+                "https://api.open-meteo.com/v1/forecast"
+                f"?latitude={coords['lat']}&longitude={coords['lon']}&current_weather=true"
+            )
+            response = requests.get(url, timeout=5)
+            response.raise_for_status()
+            data = response.json()
+            degrees = float(data["current_weather"]["winddirection"])
+            dirs = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+            cardinal = dirs[round(degrees / (360.0 / len(dirs))) % len(dirs)]
+            return f"{cardinal} ({degrees:.0f}°)"
+
+        def apply(value):
+            self.right_panel.nametowidget(self.val_dir).config(text=value)
+
+        def failed():
             self.right_panel.nametowidget(self.val_dir).config(text="API ERROR")
+
+        def done(value):
+            if value is None:
+                failed()
+            else:
+                apply(value)
+
+        def work():
+            try:
+                return fetch()
+            except Exception as exc:
+                print(f"[HUD] Weather API Error: {exc}")
+                return None
+
+        self._submit_background("online_wind", work, done)
         self.root.after(900000, self.fetch_online_wind_dir)
 
     def get_wind_direction(self, degrees):
@@ -1030,14 +1074,55 @@ class SumnerHUD:
         
         tk.Button(btn_f, text="💾 SAVE", bg="#1E8449", fg="white", command=save_all).pack(side="right", padx=20)
 
+    def save_notification_state(self):
+        """Atomically preserve notification flags across HUD restarts."""
+        state = {
+            "weather_active": bool(self.emergency_sent),
+            "dusk_sent_date": self.dusk_sent_today,
+            "maintenance_sent": bool(self.maintenance_alerted),
+        }
+        temp_path = self.path_notification_state + ".tmp"
+        try:
+            with open(temp_path, "w", encoding="utf-8") as f:
+                json.dump(state, f)
+                f.write("\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, self.path_notification_state)
+        except OSError as exc:
+            print(f"[HUD] Could not save notification state: {exc}")
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
     def update_loop(self):
         now = datetime.now()
-        if now.hour == 18 and now.minute == 0 and self.dusk_sent_today != now.date():
-            sensor_report = f"AI Matrix: {self.ai_sky_status}"
-            self.send_email_notification("Dusk Sensor Snapshot", f"Observatory status at 18:00:\n\n{sensor_report}")
-            self.dusk_sent_today = now.date()
-            
-        self.left_workspace.update_idletasks()
+        today_key = now.date().isoformat()
+        if now.hour >= 18 and self.dusk_sent_today != today_key:
+            try:
+                with open(self.path_sensors, "r", encoding="utf-8") as f:
+                    sensor_report = f.read().strip()
+            except OSError:
+                sensor_report = "Sensor report unavailable."
+
+            body = (
+                f"All-Sky Guard dusk snapshot - {now.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                f"{sensor_report}\n\n"
+                f"AI Sky Status: {self.ai_sky_status}\n"
+                "Roof status: NOT COMMISSIONED. No roof movement was commanded."
+            )
+
+            def dusk_result(success):
+                if success:
+                    self.dusk_sent_today = today_key
+                    self.save_notification_state()
+
+            self.send_email_notification(
+                "All-Sky Guard - Dusk Sensor Snapshot",
+                body,
+                on_done=dusk_result
+            )
 
         cw_all = self.all_canvas.winfo_width()
         ch_all = self.all_canvas.winfo_height()
@@ -1085,29 +1170,58 @@ class SumnerHUD:
         self.right_panel.nametowidget(self.val_alpaca).config(text="ONLINE" if alpaca_on else "OFFLINE", fg="#00FF00" if alpaca_on else "#FF3333")
         
         active_seestar_path = getattr(self, f"seestar_{self.active_seestar_index}_frame_path", None)
-        sharpcap_score = self.calculate_sharpcap_score(active_seestar_path)
+        try:
+            sharp_mtime = os.path.getmtime(active_seestar_path) if active_seestar_path else None
+        except OSError:
+            sharp_mtime = None
+        cached_path, sharpcap_score = self._sharpness_cache
+        if sharp_mtime is not None and (cached_path != (active_seestar_path, sharp_mtime)):
+            sharpcap_score = self.calculate_sharpcap_score(active_seestar_path)
+            self._sharpness_cache = ((active_seestar_path, sharp_mtime), sharpcap_score)
+        elif sharp_mtime is None:
+            sharpcap_score = 0.0
         self.right_panel.nametowidget(self.val_sharpcap).config(text=f"{sharpcap_score:.1f}")
 
-        if os.path.exists(self.path_hours):
+        if time.monotonic() - self._last_hours_read >= 10.0:
+            self._last_hours_read = time.monotonic()
             try:
-                with open(self.path_hours, "r") as f:
-                    num_hrs = float(f.read().strip())
-                    if num_hrs >= 1000.0 and not self.maintenance_alerted:
-                        messagebox.showwarning("MAINTENANCE", f"Alert: {num_hrs:.1f} Hours reached. Please clean the dome.")
-                        self.maintenance_alerted = True
-                    hrs_col = "red" if num_hrs >= 1000.0 else "#FFCC00"
-                    self.val_hrs.config(text=f"{num_hrs:.1f} HRS", fg=hrs_col)
-            except: pass
-            
-        if self.gpio_enabled:
-            wind_val = self.calculate_gpio_wind_speed()
-            self.right_panel.nametowidget(self.val_wind).config(text=f"{wind_val} mph")
+                with open(self.path_hours, "r", encoding="utf-8") as f:
+                    self._cached_hours = max(0.0, float(f.read().strip()))
+            except (OSError, ValueError):
+                pass
+        num_hrs = self._cached_hours
+        if num_hrs >= 1000.0 and not self.maintenance_alerted:
+            if not self.maintenance_popup_shown:
+                messagebox.showwarning(
+                    "MAINTENANCE",
+                    f"Alert: {num_hrs:.1f} Hours reached. Please clean the dome."
+                )
+                self.maintenance_popup_shown = True
 
+            if not self.maintenance_alert_pending:
+                self.maintenance_alert_pending = True
+
+                def maintenance_result(success):
+                    self.maintenance_alert_pending = False
+                    if success:
+                        self.maintenance_alerted = True
+                        self.save_notification_state()
+
+                submitted = self.send_email_notification(
+                    "All-Sky Guard - 1,000 Hour Maintenance Reminder",
+                    f"The observatory has reached {num_hrs:.1f} operating hours. "
+                    "Please inspect and clean the dome and review the equipment "
+                    "maintenance schedule.",
+                    on_done=maintenance_result
+                )
+                if not submitted:
+                    self.maintenance_alert_pending = False
+        self.val_hrs.config(text=f"{num_hrs:.1f} HRS", fg="red" if num_hrs >= 1000.0 else "#FFCC00")
+            
+        wind_val = None
         if os.path.exists(self.path_sensors):
             try:
                 amb_t, hum_val, raw_p = None, None, None
-                if not self.gpio_enabled:
-                    wind_val = None
                 sensor_report = ""
                 with open(self.path_sensors, "r") as f:
                     for line in f:
@@ -1123,7 +1237,7 @@ class SumnerHUD:
                                 hum_val = float(''.join(c for c in clean_val if c in '0123456789.-'))
                                 self.right_panel.nametowidget(self.val_hum).config(text=f"{hum_val}%")
                             except: pass
-                        elif "WIND SPD" in u_line and not self.gpio_enabled:
+                        elif "WIND SPD" in u_line:
                             try:
                                 wind_val = float(''.join(c for c in val if c in '0123456789.-'))
                                 self.right_panel.nametowidget(self.val_wind).config(text=f"{wind_val} mph")
@@ -1158,45 +1272,72 @@ class SumnerHUD:
                         self.last_log_time = current_time_ts
                 
                 dew_f = 0
-                if amb_t and hum_val:
+                if amb_t is not None and hum_val is not None and 0 < hum_val <= 100:
                     T = (amb_t - 32) * 5/9
-                    gamma = (math.log(hum_val/100) + ((17.27 * T) / (237.3 + T)))
-                    dew_f = ((237.3 * gamma) / (17.27 - gamma) * 9/5) + 32
+                    gamma = math.log(hum_val / 100.0) + (17.27 * T) / (237.3 + T)
+                    denominator = 17.27 - gamma
+                    if abs(denominator) > 1e-9:
+                        dew_f = ((237.3 * gamma) / denominator * 9/5) + 32
                     self.right_panel.nametowidget(self.val_dew).config(text=f"{dew_f:.1f} F")
                 
                 # Tighter Dew Control: Triggers earlier to protect against radiational dome cooling
                 extreme_dew = ((amb_t - dew_f) < 6.0 or hum_val >= 70.0) if (amb_t and dew_f and hum_val) else False
                 
                 if self.btn_dew and "AUTO" in self.btn_dew.cget("text"):
-                    with open(self.path_dew_cmd, "w") as f:
-                        f.write("AUTO")
+                    try:
+                        with open(self.path_dew_cmd, "r", encoding="utf-8") as f:
+                            dew_mode = f.read().strip()
+                    except OSError:
+                        dew_mode = ""
+                    if dew_mode != "AUTO":
+                        with open(self.path_dew_cmd, "w", encoding="utf-8") as f:
+                            f.write("AUTO")
                         
                 ai_safe = ("CLEAR" in self.ai_sky_status or "INITIALIZING" in self.ai_sky_status)
-                
-                if not self.is_wet and not self.is_obscured and (not wind_val or wind_val < 15) and not extreme_dew and ai_safe:
-                    roof_text, roof_color = "CLEAR-SAFE TO OPEN", "lightgreen"
-                else:
-                    reasons = []
-                    if self.is_wet: reasons.append("RAIN")
-                    if self.is_obscured: reasons.append("OBSCURED")
-                    if wind_val and wind_val >= 15: reasons.append("WIND")
-                    if extreme_dew: reasons.append("DEW")
-                    if not ai_safe: reasons.append("CLOUDY")
-                    roof_text, roof_color = (f"UNSAFE: {', '.join(reasons)}" if reasons else "UNSAFE"), "red"
-                self.right_panel.nametowidget(self.val_dome).config(text=roof_text, fg=roof_color)
-                
-                if self.is_wet or self.is_obscured or (wind_val and wind_val > 20) or (self.ai_sky_status == "CLOUDY"):
-                    if self.ser and self.ser.is_open:
-                        try:
-                            self.ser.write(b"ROOF:CLOSE\n")
-                        except Exception as e:
-                            print(f"[HUD Serial Error] {e}")
-                    with open(self.path_roof_cmd, "w") as f: f.write("CLOSE")
-                    if self.last_roof_safety_state == "SAFE TO OPEN" and not self.emergency_sent:
-                        reason = "RAIN/OBSCURED" if (self.is_wet or self.is_obscured) else ("INCOMING CLOUD FRONT" if self.ai_sky_status == "CLOUDY" else f"HIGH WIND ({wind_val} mph)")
-                        self.send_email_notification("EMERGENCY ROOF CLOSE", f"Roof forced CLOSED: {reason}.\n\n{sensor_report}")
-                        self.emergency_sent = True
-                else: self.emergency_sent = False
+
+                reasons = []
+                if self.is_wet:
+                    reasons.append("RAIN")
+                if self.is_obscured:
+                    reasons.append("OBSCURED")
+                if wind_val is not None and wind_val >= 15:
+                    reasons.append("WIND")
+                if extreme_dew:
+                    reasons.append("DEW")
+                if not ai_safe:
+                    reasons.append("CLOUDY")
+
+                roof_text = "NOT COMMISSIONED"
+                roof_color = "orange"
+                if reasons:
+                    roof_text = "NOT COMMISSIONED - WEATHER: " + ", ".join(reasons)
+                    roof_color = "red"
+
+                self.right_panel.nametowidget(self.val_dome).config(
+                    text=roof_text, fg=roof_color
+                )
+
+                # Informational alert only. No roof command is sent or written.
+                if reasons and not self.emergency_sent:
+                    reason_text = ", ".join(reasons)
+
+                    def weather_result(success):
+                        if success:
+                            self.emergency_sent = True
+                            self.save_notification_state()
+
+                    self.send_email_notification(
+                        "ROOF WEATHER ALERT - NOT COMMISSIONED",
+                        "Weather conditions requiring attention: "
+                        + reason_text
+                        + ".\n\nNo roof movement command was issued. "
+                          "Roof controls are not commissioned.\n\n"
+                        + sensor_report,
+                        on_done=weather_result
+                    )
+                elif not reasons and self.emergency_sent:
+                    self.emergency_sent = False
+                    self.save_notification_state()
                 self.last_roof_safety_state = roof_text
             except: pass
             

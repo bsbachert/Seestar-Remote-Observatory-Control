@@ -1,162 +1,218 @@
-import smbus2, bme280, time, os, threading, math, serial
-import RPi.GPIO as GPIO
+#!/usr/bin/env python3
+import os
+import time
+import math
+import tempfile
+import serial
 
-# --- CONFIG ---
-ROOF_PIN = 17  
-DEW_HEATER_PIN = 12  
-USB_PORT = "/dev/ttyUSB0" 
-PATH_SENSORS = "/home/pi/allsky_guard/sensors.txt"
-PATH_HOURS = "/home/pi/allsky_guard/hours.txt"
-PATH_DEW_CMD = "/home/pi/allsky_guard/dew_cmd.txt"
+APP = "/home/pi/allsky_guard"
+PORTS = ("/dev/ttyUSB0", "/dev/ttyACM0", "/dev/ttyUSB1", "/dev/ttyACM1")
+BAUD = 9600
+PATH_SENSORS = APP + "/sensors.txt"
+PATH_HOURS = APP + "/hours.txt"
+PATH_DEW_CMD = APP + "/dew_cmd.txt"
 
-# --- GPIO SETUP ---
-GPIO.setmode(GPIO.BCM)
-GPIO.setwarnings(False)
-GPIO.setup(ROOF_PIN, GPIO.OUT)
-GPIO.setup(DEW_HEATER_PIN, GPIO.OUT)
-
-# --- GLOBAL DATA HOLDERS ---
-latest_wind_dir = "--"
-latest_amb_temp = None
-latest_humidity = None
-latest_pressure = "--"
-latest_wind_speed = 0.0
-latest_rain_state = "DRY"
 ser = None
+last_seen = None
+last_mode_sent = None
+last_tick = time.monotonic()
+last_hours_save = 0.0
+last_status_save = 0.0
+total_hours = 0.0
 
-def connect_serial():
+data = {"wind": None, "amb": None, "hum": None,
+        "pres": None, "rain": None, "heater": None}
+
+
+def atomic_write(path, content):
+    fd, temp = tempfile.mkstemp(dir=APP, prefix=".asg-")
     try:
-        if not os.path.exists(USB_PORT): return None
-        s = serial.Serial(USB_PORT, 9600, timeout=2)
-        time.sleep(2)
-        s.reset_input_buffer()
-        return s
-    except: return None
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp, path)
+    except Exception:
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        raise
 
-def arduino_reader():
-    global latest_wind_dir, latest_wind_speed, latest_amb_temp, latest_humidity, latest_pressure, latest_rain_state, ser
-    ser = connect_serial()
+
+def load_hours():
+    try:
+        with open(PATH_HOURS) as f:
+            value = float(f.read().strip())
+        if not math.isfinite(value) or value < 0:
+            raise RuntimeError(
+                "[Worker] SAFETY STOP: hours.txt contains an invalid value; "
+                "maintenance hours were NOT reset."
+            )
+        return value
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(
+            "[Worker] SAFETY STOP: hours.txt is missing or invalid; "
+            "maintenance hours were NOT reset."
+        ) from exc
+
+
+def read_mode():
+    try:
+        with open(PATH_DEW_CMD) as f:
+            mode = f.read().strip().upper()
+    except OSError:
+        mode = "AUTO"
+    return mode if mode in ("AUTO", "ON", "OFF") else "AUTO"
+
+
+def connect():
+    global ser, last_mode_sent
+    for port in PORTS:
+        try:
+            if not os.path.exists(port):
+                continue
+            candidate = serial.Serial(port, BAUD, timeout=0.25, write_timeout=1)
+            time.sleep(2)
+            candidate.reset_input_buffer()
+            ser = candidate
+            last_mode_sent = None
+            print("[Worker] Nano connected: " + port, flush=True)
+            return
+        except (serial.SerialException, OSError) as exc:
+            print("[Worker] Connection error: " + str(exc), flush=True)
+    ser = None
+
+
+def parse_telemetry(line):
+    global last_seen
+    if not line.startswith("WEATHER:"):
+        return
+    fields = {}
+    for item in line[len("WEATHER:"):].split(","):
+        if ":" in item:
+            k, v = item.split(":", 1)
+            fields[k.strip().upper()] = v.strip()
+    last_seen = time.monotonic()
+
+    try:
+        v = float(fields["WIND"])
+        data["wind"] = v if math.isfinite(v) and v >= 0 else None
+    except (KeyError, ValueError):
+        data["wind"] = None
+
+    try:
+        amb = float(fields["AMB"])
+        hum = float(fields["HUM"])
+        pres = float(fields["PRES"])
+        valid = (math.isfinite(amb) and math.isfinite(hum) and
+                 math.isfinite(pres) and 0 < hum <= 100 and pres > 0)
+        data["amb"], data["hum"], data["pres"] = (
+            (amb, hum, pres) if valid else (None, None, None))
+    except (KeyError, ValueError):
+        data["amb"] = data["hum"] = data["pres"] = None
+
+    try:
+        data["rain"] = int(fields["RAIN"]) == 1
+    except (KeyError, ValueError):
+        data["rain"] = None
+
+    try:
+        data["heater"] = int(fields["HEATER"]) == 1
+    except (KeyError, ValueError):
+        data["heater"] = None
+
+
+def service_serial():
+    global ser, last_mode_sent
+    try:
+        line = ser.readline().decode("utf-8", errors="ignore").strip()
+        if line:
+            parse_telemetry(line)
+        mode = read_mode()
+        if mode != last_mode_sent:
+            ser.write(("HEATER:" + mode + "\n").encode("ascii"))
+            ser.flush()
+            last_mode_sent = mode
+            print("[Worker] Heater mode: " + mode, flush=True)
+    except (serial.SerialException, OSError) as exc:
+        print("[Worker] Serial error: " + str(exc), flush=True)
+        try:
+            ser.close()
+        except Exception:
+            pass
+        ser = None
+        last_mode_sent = None
+
+
+def update_hours():
+    global total_hours, last_tick, last_hours_save
+    now = time.monotonic()
+    total_hours += max(0.0, now - last_tick) / 3600.0
+    last_tick = now
+    if now - last_hours_save >= 2:
+        try:
+            atomic_write(PATH_HOURS, f"{total_hours:.4f}\n")
+            last_hours_save = now
+        except OSError as exc:
+            print("[Worker] hours.txt write error: " + str(exc), flush=True)
+
+
+def update_status():
+    global last_status_save
+    now = time.monotonic()
+    if now - last_status_save < 1:
+        return
+    last_status_save = now
+
+    fresh = last_seen is not None and now - last_seen <= 10
+    v = data if fresh else {}
+    wind, amb, hum, pres = (v.get(k) for k in ("wind", "amb", "hum", "pres"))
+    rain, heater = v.get("rain"), v.get("heater")
+    mode = read_mode()
+
+    if heater is None:
+        heater_text = "UNKNOWN"
+    elif mode == "AUTO":
+        heater_text = "ON (AUTO)" if heater else "OFF (AUTO)"
+    else:
+        heater_text = "ON (MANUAL)" if heater else "OFF (MANUAL)"
+
+    lines = [
+        "ROOF: NOT COMMISSIONED",
+        "HEATER: " + heater_text,
+        f"AMB TEMP: {amb:.1f} F" if amb is not None else "AMB TEMP: --",
+        f"HUMIDITY: {hum:.1f} %" if hum is not None else "HUMIDITY: --",
+        f"PRESSURE: {pres:.1f} hPa" if pres is not None else "PRESSURE: --",
+        f"WIND SPD: {wind:.1f} MPH" if wind is not None else "WIND SPD: --",
+        "PRECIP: UNKNOWN" if rain is None else
+        ("PRECIP: WET" if rain else "PRECIP: DRY"),
+        f"TOTAL RUN: {total_hours:.1f} HRS",
+    ]
+    if total_hours >= 1000:
+        lines.append("MAINT: CLEANING REQUIRED")
+    try:
+        atomic_write(PATH_SENSORS, "\n".join(lines) + "\n")
+    except OSError as exc:
+        print("[Worker] sensors.txt write error: " + str(exc), flush=True)
+
+
+def main():
+    global total_hours
+    total_hours = load_hours()
+    if not os.path.exists(PATH_DEW_CMD):
+        atomic_write(PATH_DEW_CMD, "AUTO\n")
+    connect()
     while True:
-        if ser and ser.is_open:
-            try:
-                if ser.in_waiting > 0:
-                    line = ser.readline().decode('utf-8', errors='ignore').strip()
-                    if line.startswith("WEATHER:"):
-                        clean_line = line.replace("WEATHER:", "")
-                        parts = [item for item in clean_line.split(",") if ":" in item]
-                        data = dict(item.split(":", 1) for item in parts)
-                        
-                        if 'PRES' in data: latest_pressure = f"{data.get('PRES', '--')} hPa"
-                        if 'RAIN' in data: latest_rain_state = "WET" if data.get('RAIN') == "1" else "DRY"
-                        
-                        try:
-                            if 'AMB' in data: latest_amb_temp = float(data.get('AMB'))
-                            if 'HUM' in data: latest_humidity = float(data.get('HUM'))
-                            if 'WIND' in data: latest_wind_speed = float(data.get('WIND'))
-                        except: pass
-            except: 
-                ser = None
+        if ser is None:
+            time.sleep(3)
+            connect()
         else:
-            time.sleep(5)
-            ser = connect_serial()
+            service_serial()
+        update_hours()
+        update_status()
         time.sleep(0.1)
 
-threading.Thread(target=arduino_reader, daemon=True).start()
-last_check = time.time()
-auto_dew_state = False  # Track hysteresis state across loops
 
-while True:
-    time.sleep(2)
-    
-    amb_f = latest_amb_temp
-    hum_val = latest_humidity
-    speed = latest_wind_speed
-    is_wet = (latest_rain_state == "WET")
-    
-    # --- Read Dew Command from HUD ---
-    dew_cmd = "AUTO"
-    if os.path.exists(PATH_DEW_CMD):
-        try:
-            with open(PATH_DEW_CMD, "r") as f:
-                dew_cmd = f.read().strip().upper()
-        except: pass
-
-    heater_status = "OFF"
-    heater_on = False
-    
-    # --- Dew Calculation & Intelligent Auto Heating ---
-    dew_f = None
-    if amb_f is not None and hum_val is not None:
-        try:
-            T = (amb_f - 32) * 5/9
-            gamma = (math.log(hum_val/100) + ((17.27 * T) / (237.3 + T)))
-            dew_f = ((237.3 * gamma) / (17.27 - gamma) * 9/5) + 32
-        except: pass
-
-    # Hysteresis + Relative Humidity Floor Evaluation
-    if amb_f is not None and dew_f is not None and hum_val is not None:
-        dew_delta = amb_f - dew_f
-        
-        # Turn ON if temp is within 3.0°F of dew point AND humidity is >= 80%
-        if dew_delta <= 3.0 and hum_val >= 80.0:
-            auto_dew_state = True
-        # Turn OFF if temp clears 5.5°F above dew point OR humidity drops below 75%
-        elif dew_delta >= 5.5 or hum_val < 75.0:
-            auto_dew_state = False
-
-        extreme_dew = auto_dew_state
-    else:
-        extreme_dew = False
-
-    # Determine Heater State based on HUD command
-    if dew_cmd == "ON":
-        heater_on = True
-        heater_status = "ON (Manual)"
-    elif dew_cmd == "OFF":
-        heater_on = False
-        heater_status = "OFF (Manual)"
-    else:  # AUTO mode
-        if extreme_dew:
-            heater_on = True
-            heater_status = "ON (AUTO - Dew Risk)"
-        else:
-            heater_on = False
-            heater_status = "OFF (AUTO - Safe)"
-
-    # --- ACTUALLY DRIVE THE MOSFET PIN ---
-    GPIO.output(DEW_HEATER_PIN, GPIO.HIGH if heater_on else GPIO.LOW)
-
-    # Optional serial transmission to Arduino
-    if ser and ser.is_open:
-        try:
-            ser.write(b"HEATER:ON\n" if heater_on else b"HEATER:OFF\n")
-        except: pass
-
-    # --- Roof Safety Logic ---
-    status = "CLOSED/LOCKED" if (is_wet or speed > 20.0) else "OPEN/SAFE"
-    GPIO.output(ROOF_PIN, GPIO.HIGH if status == "CLOSED/LOCKED" else GPIO.LOW)
-
-    # --- Maintenance Logging ---
-    now = time.time()
-    elapsed = (now - last_check) / 3600.0
-    last_check = now
-    total = 0.0
-    try:
-        if os.path.exists(PATH_HOURS):
-            with open(PATH_HOURS, "r") as hf: total = float(hf.read().strip())
-        new_total = total + elapsed
-        with open(PATH_HOURS, "w") as hf: hf.write(f"{new_total:.4f}")
-    except: new_total = 0.0
-
-    # --- Output to sensors.txt ---
-    try:
-        with open(PATH_SENSORS, "w") as f:
-            f.write(f"ROOF: {status}\nHEATER: {heater_status}\n")
-            f.write(f"AMB TEMP: {f'{amb_f:.1f} F' if amb_f is not None else '--'}\n")
-            f.write(f"HUMIDITY: {f'{hum_val:.1f} %' if hum_val is not None else '--'}\n")
-            f.write(f"PRESSURE: {latest_pressure}\n")
-            f.write(f"WIND SPD: {speed:.1f} MPH\n")
-            f.write(f"PRECIP: {latest_rain_state}\n")
-            f.write(f"TOTAL RUN: {new_total:.1f} HRS\n")
-            if new_total >= 1000.0: f.write("MAINT: CLEANING REQUIRED\n")
-    except: pass
+if __name__ == "__main__":
+    main()

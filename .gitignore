@@ -3,3 +3,47 @@ sensors.txt
 radar.png
 clock.png
 radar.png
+
+# Local observatory configuration
+csk_id.txt
+dew_cmd.txt
+dossier.txt
+email_receiver.txt
+esp_ip.txt
+fingerbot_mac.txt
+observatory_state.json
+radar_coords.txt
+roof_cmd.txt
+seestar_1_ip.txt
+seestar_2_ip.txt
+seestar_ip.txt
+snapshot.json
+tinytuya.json
+
+# Runtime data
+hours.txt
+sensors.txt
+sensors_24h.log
+notification_state.json
+radar.png
+clock.png
+
+# Python environment and generated files
+venv/
+__pycache__/
+*.py[cod]
+
+# Local backups
+*.backup
+*.bak
+*.before_patch
+*.pre_*
+*.new
+
+# Dynamic camera captures
+ref/latest_seestar_1.jpg
+ref/latest_seestar_2.jpg
+ref/latest_seestar_2.fit
+
+# Local desktop/editor artifacts
+.lgd-nfy0
